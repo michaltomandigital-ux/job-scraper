@@ -3,12 +3,11 @@
 NIKDY neodesílá reakce na inzeráty. POST jde jen na api.notion.com a api.telegram.org.
 """
 import html
-import json
 import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -61,20 +60,39 @@ JENPRACE_CZ = {
     "stop_heading": "Podívejte se i na jiné nabídky",  # za tímto nadpisem jsou jen doporučené nabídky
 }
 
-# prace.cz: hledání podle slova je jen na /hledat/, které robots.txt zakazuje -> vždy robots_disallowed
-PRACE_CZ = {
-    "name": "prace.cz",
-    "base": "https://www.prace.cz",
-    "search": "https://www.prace.cz/hledat/?q={kw}&page={page}",
-}
-
 # Nesouvisející obory: nabídka, jejíž NÁZEV obsahuje některý z těchto výrazů (bez ohledu na velikost písmen),
 # se do Notionu neukládá. Ostatní se uloží a filtr relevance je na uživateli v Notionu.
 EXCLUDE_TITLE_WORDS = [
     "recepční", "číšník", "číšnic", "servírk", "pokladní", "pokladník",
     "uklízeč", "uklízečk",
     "brigádník", "kuchař", "řidič", "zdravotní sestra", "pečovatel",
+    "lékař", "sestra", "sociální pracovn", "ošetřovatel", "zdravotnick", "fyzioterapeut",
+    "doktor", "mudr", "zubař", "zubní", "stomatolog", "sanitář", "zdravotní asistent",
+    # sociální služby a péče
+    "sociální služb", "sociálních služ", "sociální péče", "sociální poradce", "sociální asistent",
+    "pečující", "pečovat", "asistent péče", "pracovník v přímé péči", "pracovník přímé péče",
+    "domov pro", "domov seniorů", "domov důchodců", "chráněné bydlení",
 ]
+# VZV (vysokozdvižný vozík): jakákoli zmínka v názvu nebo detailu nabídku vyřadí, i "VZV výhodou" a "bez nutnosti VZV".
+VZV_RE = re.compile(r"\bVZV\b|vysokozdvižn", re.I)
+# Výslovně chtěné pozice: název s těmito výrazy se seznamem výše nevyřadí ("Prodavač/pokladní", "Skladník – řidič VZV").
+KEEP_TITLE_WORDS = ("skladn", "prodav")
+# Noční směny (název i detail): "nočn" jen na začátku slova, ať "vánoční" neprojde jako noční.
+NIGHT_RE = re.compile(r"\bnočn", re.I)
+NIGHT_NEG_RE = re.compile(r"\bbez\b|\bnení\b|\bnejsou\b|\bnebud|\bžádn|\bnemus|vyhn", re.I)
+
+# Místo výkonu práce: nabídka se uloží, jen když místo obsahuje některý z těchto výrazů
+# (bez ohledu na velikost písmen; část města např. "Pardubice – Polabiny" projde). Prázdné místo projde.
+# Kraje a "Celá ČR" neprojdou. Okolí Rychnova a Kostelce nad Orlicí: obce kolem nich.
+PLACE_WORDS = [
+    "hradec králové", "pardubice", "rychnov nad kněžnou", "kostelec nad orlicí",
+    "solnice", "vamberk", "častolovice", "doudleby nad orlicí", "albrechtice nad orlicí",
+    "týniště nad orlicí", "borohrádek", "opočno", "dobruška",
+]
+
+# Řidičský průkaz jako podmínka: řádek detailu zmiňuje průkaz/oprávnění a není to "výhoda".
+LICENCE_RE = re.compile(r"řidičsk[ýé]\s+(průkaz|oprávnění)|řidičák", re.I)
+LICENCE_OPTIONAL_RE = re.compile(r"výhod|vítán|není podmínk|není nutn|nepovinn|\bplus\b", re.I)
 
 CZ_MONTHS = {
     "ledna": 1, "února": 2, "března": 3, "dubna": 4, "května": 5, "června": 6,
@@ -117,7 +135,10 @@ def parse_cz_date(text: str, today: date | None = None) -> date | None:
         return today - timedelta(days=1)
     m = re.search(r"(\d{1,2})\.\s*([a-zěščřžýáíéúůťďňó]+)", t)
     if m and m.group(2) in CZ_MONTHS:
-        d = date(today.year, CZ_MONTHS[m.group(2)], int(m.group(1)))
+        try:
+            d = date(today.year, CZ_MONTHS[m.group(2)], int(m.group(1)))
+        except ValueError:  # 29. února v nepřestupném roce: jinak by spadl celý portál
+            return None
         return d if d <= today else d.replace(year=today.year - 1)
     return None
 
@@ -125,61 +146,68 @@ def parse_cz_date(text: str, today: date | None = None) -> date | None:
 def is_excluded(job: "Job") -> bool:
     """True, když název pozice patří do nesouvisejícího oboru (EXCLUDE_TITLE_WORDS)."""
     t = job.title.lower()
+    if NIGHT_RE.search(t) and not NIGHT_NEG_RE.search(t) or VZV_RE.search(t):
+        return True
+    if any(w in t for w in KEEP_TITLE_WORDS):
+        return False
     return any(w in t for w in EXCLUDE_TITLE_WORDS)
 
 
-def jsonld_jobs(soup: BeautifulSoup, portal: str) -> list[Job]:
-    """Preferovaný zdroj: JSON-LD JobPosting (i vnořený v @graph / ItemList)."""
-    out: list[Job] = []
+def place_ok(place: str) -> bool:
+    """True, když je místo výkonu práce v povolené lokalitě (PLACE_WORDS); prázdné místo projde."""
+    p = place.lower().strip()
+    return not p or any(w in p for w in PLACE_WORDS)
 
-    def walk(node):
-        if isinstance(node, list):
-            for n in node:
-                walk(n)
-        elif isinstance(node, dict):
-            t = node.get("@type")
-            if t == "JobPosting" or (isinstance(t, list) and "JobPosting" in t):
-                org = node.get("hiringOrganization") or {}
-                loc = node.get("jobLocation") or {}
-                if isinstance(loc, list):
-                    loc = loc[0] if loc else {}
-                addr = loc.get("address") or {}
-                place = addr.get("addressLocality") or addr.get("addressRegion") or ""
-                posted = None
-                if node.get("datePosted"):
-                    try:
-                        posted = datetime.fromisoformat(node["datePosted"][:10]).date()
-                    except ValueError:
-                        pass
-                url = node.get("url") or ""
-                if url and node.get("title"):
-                    out.append(Job(node["title"], org.get("name", "") if isinstance(org, dict) else "",
-                                   place, portal, url, posted))
-            for v in node.values():
-                if isinstance(v, (list, dict)):
-                    walk(v)
 
-    for tag in soup.find_all("script", type="application/ld+json"):
-        try:
-            walk(json.loads(tag.string or ""))
-        except (ValueError, TypeError):
-            continue
-    return out
+def _line_hit(text: str, pos: re.Pattern, neg: re.Pattern, look_next: bool = False) -> bool:
+    """True, když některý řádek odpovídá `pos` a zápor `neg` na něm není (s look_next ani na dalším řádku)."""
+    lines = text.split("\n")
+    return any(pos.search(line) and not neg.search(line + " " + nxt if look_next else line)
+               for line, nxt in zip(lines, lines[1:] + [""]))
+
+
+def requires_driving_licence(text: str) -> bool:
+    """True, když text detailu požaduje řidičský průkaz (zmínka s 'výhodou'/'vítán' se nepočítá)."""
+    # "výhodou" bývá v samostatném tagu (<strong>) -> get_text("\n") ho přesune na další řádek
+    return _line_hit(text, LICENCE_RE, LICENCE_OPTIONAL_RE, look_next=True)
+
+
+def has_night_shift(text: str) -> bool:
+    """True, když detail zmiňuje noční směny a na stejném řádku není zápor ('bez nočních')."""
+    return _line_hit(text, NIGHT_RE, NIGHT_NEG_RE)
+
+
+def fetch_detail_text(client: httpx.Client, job: "Job", robots_cache: dict) -> str | None:
+    """Stáhne detail nabídky (GET, s pauzou, po kontrole robots.txt) jako text. None = nelze ověřit."""
+    u = urlparse(job.url)
+    try:
+        if u.netloc not in robots_cache:  # detail může být na jiném hostiteli než výpis
+            robots_cache[u.netloc] = robots_parser(client, f"{u.scheme}://{u.netloc}")
+        if not robots_cache[u.netloc].can_fetch(USER_AGENT, job.url):
+            return None
+        time.sleep(REQUEST_PAUSE)
+        r = client.get(job.url)
+        if r.status_code != 200:
+            return None
+        soup = BeautifulSoup(r.text, "html.parser")
+        for el in soup.select("header, nav, footer"):  # menu/patička portálu (jenprace.cz: "Top profese" s VZV, řidičem)
+            el.decompose()
+        return soup.get_text("\n", strip=True)
+    except httpx.HTTPError:
+        return None
 
 
 # ---------------------------------------------------------------- portály
 def parse_jobs_cz(html: str, today: date | None = None) -> list[Job]:
     soup = BeautifulSoup(html, "html.parser")
-    jobs = jsonld_jobs(soup, JOBS_CZ["name"])
-    if jobs:
-        return jobs
+    jobs: list[Job] = []
     for card in soup.select(JOBS_CZ["card"]):
         a = card.select_one(JOBS_CZ["link"])
         if not a or not a.get("href"):
             continue
         href = urljoin(JOBS_CZ["base"], a["href"])
         m = re.search(r"/rpd/(\d+)", href)
-        url = f"{JOBS_CZ['base']}/rpd/{m.group(1)}/" if m else href.split("?")[0]
+        url = f"{JOBS_CZ['base']}/rpd/{m.group(1)}/" if m else href  # bez /rpd/ zůstává query (nese ID)
         items = [li.get_text(" ", strip=True) for li in card.select(JOBS_CZ["footer_items"])]
         st = card.select_one(JOBS_CZ["status"])
         jobs.append(Job(
@@ -196,9 +224,7 @@ def parse_jobs_cz(html: str, today: date | None = None) -> list[Job]:
 def parse_jenprace_cz(html: str, today: date | None = None) -> list[Job]:
     cfg = JENPRACE_CZ
     soup = BeautifulSoup(html, "html.parser")
-    jobs = [j for j in jsonld_jobs(soup, cfg["name"])]
-    if jobs:
-        return jobs
+    jobs: list[Job] = []
     first = soup.select_one(cfg["card"])
     container = first.parent if first else None
     if container is None:
@@ -230,57 +256,59 @@ def parse_jenprace_cz(html: str, today: date | None = None) -> list[Job]:
     return jobs
 
 
-def parse_prace_cz(html: str, today: date | None = None) -> list[Job]:
-    return []  # nikdy se nevolá: /hledat/ je v robots.txt zakázané
-
-
 # portál -> (konfigurace, parser). Další portály se přidají sem.
 PORTALS = {
     "jobs.cz": (JOBS_CZ, parse_jobs_cz),
     "jenprace.cz": (JENPRACE_CZ, parse_jenprace_cz),
-    "prace.cz": (PRACE_CZ, parse_prace_cz),
 }
 
 
-def robots_ok(client: httpx.Client, base: str, url: str) -> bool:
+def robots_parser(client: httpx.Client, base: str) -> RobotFileParser:
     rp = RobotFileParser()
     r = client.get(urljoin(base, "/robots.txt"))
-    if r.status_code in (401, 403):
-        return False
-    rp.parse(r.text.splitlines() if r.status_code == 200 else [])
-    return rp.can_fetch(USER_AGENT, url)
+    if r.status_code in (401, 403) or r.status_code >= 500:  # nelze ověřit = zakázáno
+        rp.disallow_all = True
+    else:
+        rp.parse(r.text.splitlines() if r.status_code == 200 else [])
+    return rp
 
 
-def search_portal(client: httpx.Client, name: str, keywords: list[str]) -> list[Job]:
+def search_portal(client: httpx.Client, name: str, keywords: list[str]) -> tuple[list[Job], int]:
+    """Vrací (nabídky, počet selhaných dotazů)."""
     cfg, parser = PORTALS[name]
+    robots = robots_parser(client, cfg["base"])  # robots.txt jednou na portál, před hledáním; platí pro každé URL
     found: dict[str, Job] = {}
-    first_request = True
-    empty_first_page = False
+    any_allowed = False
+    saw_cards = empty_200 = False
+    failed, last_error = 0, None
     cutoff = date.today() - timedelta(days=MAX_POSTED_DAYS)
     for kw in keywords:
         for city in CITIES:
             for page in range(1, MAX_PAGES + 1):
                 url = cfg["search"].format(city_slug=slugify(city), kw=quote_plus(kw), page=page,
                                            city_id=cfg.get("city_ids", {}).get(city, ""))
-                if first_request:  # robots.txt se kontroluje jednou na portál, před hledáním
-                    if not robots_ok(client, cfg["base"], url):
-                        raise RobotsDisallowed(name)
-                    first_request = False
-                time.sleep(REQUEST_PAUSE)
-                r = client.get(url)
-                if r.status_code == 404:  # portál lokalitu nezná (např. jobs.cz Kostelec nad Orlicí) -> jen tato lokalita je prázdná
-                    empty_first_page = empty_first_page or page == 1
+                if not robots.can_fetch(USER_AGENT, url):  # zakázané URL se přeskočí, nikdy neobchází
                     break
-                r.raise_for_status()
-                jobs = parser(r.text)
-                if not jobs and page == 1 and not found:
-                    time.sleep(REQUEST_PAUSE)  # jeden opakovaný pokus (občasná prázdná stránka)
+                any_allowed = True
+                time.sleep(REQUEST_PAUSE)
+                try:
                     r = client.get(url)
+                    if r.status_code == 404:  # portál lokalitu nezná (např. jobs.cz Kostelec nad Orlicí) -> jen tato lokalita je prázdná
+                        break
                     r.raise_for_status()
                     jobs = parser(r.text)
-                if not jobs:
-                    empty_first_page = empty_first_page or page == 1
+                    if not jobs and page == 1 and not found:
+                        time.sleep(REQUEST_PAUSE)  # jeden opakovaný pokus (občasná prázdná stránka)
+                        r = client.get(url)
+                        r.raise_for_status()
+                        jobs = parser(r.text)
+                except httpx.HTTPError as e:  # chyba jednoho dotazu nezahodí ostatní výsledky portálu
+                    failed, last_error = failed + 1, e
                     break
+                if not jobs:
+                    empty_200 = empty_200 or page == 1
+                    break
+                saw_cards = True
                 new = [j for j in jobs if j.url not in found]
                 all_dated_old = all(j.posted and j.posted < cutoff for j in jobs)
                 for j in new:
@@ -288,30 +316,23 @@ def search_portal(client: httpx.Client, name: str, keywords: list[str]) -> list[
                         found[j.url] = j
                 if not new or all_dated_old:  # nové stránky už nic nepřinesou
                     break
-    if not found and empty_first_page:  # HTTP 200, ale nula výsledků všude = podezření na změnu layoutu
+    if not any_allowed:
+        raise RobotsDisallowed(name)
+    if not found and last_error:
+        raise last_error
+    if not found and not saw_cards and empty_200:  # HTTP 200, ale žádné karty nikde = podezření na změnu layoutu
         raise LayoutChanged(name)
-    return list(found.values())
+    return list(found.values()), failed
 
 
 # ---------------------------------------------------------------- Notion
-def _post(client: httpx.Client, url: str, **kw) -> httpx.Response:
-    """Jediné místo, odkud se posílá POST. Povoleny jen api.notion.com a api.telegram.org."""
-    if urlparse(url).hostname not in ALLOWED_POST_HOSTS:
-        raise RuntimeError(f"POST na {url} je zakázán")
+def _send(client: httpx.Client, method: str, url: str, **kw) -> httpx.Response:
+    """Jediné místo, odkud jde POST/PATCH. POST jen na api.notion.com a api.telegram.org, PATCH jen na Notion."""
+    allowed = ALLOWED_POST_HOSTS if method == "POST" else {"api.notion.com"}
+    if method not in ("POST", "PATCH") or urlparse(url).hostname not in allowed:
+        raise RuntimeError(f"{method} na {urlparse(url).hostname} je zakázán")  # bez celé URL: Telegram má token v cestě
     for attempt in range(5):  # rate limit (429): počkat podle Retry-After a zkusit znovu
-        r = client.post(url, **kw)
-        if r.status_code != 429:
-            break
-        time.sleep(float(r.headers.get("Retry-After", 2 ** attempt)))
-    return r
-
-
-def _patch(client: httpx.Client, url: str, **kw) -> httpx.Response:
-    """Úprava stránky Notionu (archivace duplicit). Povolen jen api.notion.com."""
-    if urlparse(url).hostname != "api.notion.com":
-        raise RuntimeError(f"PATCH na {url} je zakázán")
-    for attempt in range(5):  # rate limit (429)
-        r = client.patch(url, **kw)  # jediné místo, odkud se PATCH posílá
+        r = client.request(method, url, **kw)
         if r.status_code != 429:
             break
         time.sleep(float(r.headers.get("Retry-After", 2 ** attempt)))
@@ -333,8 +354,10 @@ class Notion:
         if not sources:
             raise SystemExit("Notion: databáze nemá žádný data source")
         self.ds_id = sources[0]["id"]
-        props = self.c.get(f"/data_sources/{self.ds_id}").json().get("properties", {})
-        self._check_schema(props)
+        ds = self.c.get(f"/data_sources/{self.ds_id}")
+        if ds.status_code != 200:
+            raise SystemExit(f"Notion: data source nelze načíst ({ds.status_code}), ověř sdílení integrace")
+        self._check_schema(ds.json().get("properties", {}))
 
     @staticmethod
     def _check_schema(props: dict):
@@ -353,7 +376,7 @@ class Notion:
             body = {"page_size": 100}
             if cursor:
                 body["start_cursor"] = cursor
-            r = _post(self.c, f"https://api.notion.com/v1/data_sources/{self.ds_id}/query", json=body)
+            r = _send(self.c, "POST", f"https://api.notion.com/v1/data_sources/{self.ds_id}/query", json=body)
             r.raise_for_status()
             data = r.json()
             for p in data["results"]:
@@ -361,15 +384,16 @@ class Notion:
                 text = lambda col: "".join(x.get("plain_text", "") for x in props.get(col, {}).get("title")
                                            or props.get(col, {}).get("rich_text") or [])
                 key = tuple(s.strip().lower() for s in (text(COL_TITLE), text(COL_COMPANY), text(COL_PLACE)))
+                status = (props.get(COL_STATUS, {}).get("status") or {}).get("name", "")
                 rows.append({"id": p["id"], "url": props.get(COL_URL, {}).get("url") or "",
-                             "key": key, "created": p.get("created_time", "")})
+                             "key": key, "created": p.get("created_time", ""), "status": status})
             if not data.get("has_more"):
                 return rows
             cursor = data["next_cursor"]
 
     def archive(self, page_id: str):
         """Přesune řádek do koše Notionu (lze obnovit)."""
-        r = _patch(self.c, f"https://api.notion.com/v1/pages/{page_id}", json={"archived": True})
+        r = _send(self.c, "PATCH", f"https://api.notion.com/v1/pages/{page_id}", json={"archived": True})
         r.raise_for_status()
 
     def create(self, j: Job):
@@ -384,7 +408,7 @@ class Notion:
                 COL_URL: {"url": j.url},
                 COL_STATUS: {"status": {"name": STATUS_NEW}},
             }}
-        r = _post(self.c, "https://api.notion.com/v1/pages", json=body)
+        r = _send(self.c, "POST", "https://api.notion.com/v1/pages", json=body)
         r.raise_for_status()
 
 
@@ -406,7 +430,7 @@ def telegram_send(text: str) -> None:
     chunks.append(cur)
     with httpx.Client(timeout=30) as c:
         for ch in chunks:
-            r = _post(c, f"https://api.telegram.org/bot{token}/sendMessage",
+            r = _send(c, "POST", f"https://api.telegram.org/bot{token}/sendMessage",
                       json={"chat_id": chat, "text": ch, "disable_web_page_preview": True,
                             "parse_mode": "HTML"})
             if r.status_code != 200:  # bez raise_for_status: jeho zpráva by obsahovala token v URL
@@ -429,7 +453,35 @@ def notify_telegram(jobs: list[Job]) -> bool:
     return True
 
 
+def summary(res: dict, dry_run: bool = False) -> str:
+    """Prostý text shrnutí běhu (CLI, MCP, Telegram). Pro Telegram escapovat (notify_done)."""
+    g = lambda k: res.get(k, 0)
+    verb = "by se uložilo" if dry_run else "uloženo"
+    portals = "; ".join(f"{n}: {s}" for n, s in res["portals"].items())
+    return (f"Nových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
+            f"vyřazeno filtry: {g('excluded') + g('excluded_licence') + g('excluded_night') + g('excluded_vzv')}, "
+            f"chyby zápisu: {g('write_errors')}\nPortály: {portals}")
+
+
+def notify_done(res: dict) -> None:
+    """Oznámení o dokončení scrapingu do Telegramu (posílá se i při 0 nových)."""
+    telegram_send("<b>Scraping dokončen</b>\n" + html.escape(summary(res), quote=False))
+
+
 # ---------------------------------------------------------------- hlavní běh
+def split_duplicates(rows: list[dict]) -> tuple[dict, list[str]]:
+    """Řádky -> ({klíč: ponechaný řádek}, [ID duplicit k archivaci]). Nejstarší zůstává."""
+    keep, dups = {}, []
+    # řádky s jiným stavem než "Nový" (uživatel s nimi pracoval) se nikdy nearchivují a mají přednost
+    for row in sorted(rows, key=lambda r: (r["status"] == STATUS_NEW, r["created"])):
+        if row["key"] in keep:
+            if row["status"] == STATUS_NEW:
+                dups.append(row["id"])
+        else:
+            keep[row["key"]] = row
+    return keep, dups
+
+
 def run(keywords: list[str], dry_run: bool = False) -> dict:
     """Vrací {'new': [Job], 'skipped_existing': int, 'portals': {name: stav}}."""
     load_dotenv()
@@ -443,8 +495,8 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
         for name in PORTALS:
             try:
-                jobs = search_portal(client, name, keywords)
-                result["portals"][name] = f"ok ({len(jobs)})"
+                jobs, failed = search_portal(client, name, keywords)
+                result["portals"][name] = f"ok ({len(jobs)})" + (f", {failed} dotazů selhalo" if failed else "")
                 candidates.update({j.url: j for j in jobs})
             except RobotsDisallowed:
                 result["portals"][name] = "robots_disallowed"
@@ -455,12 +507,7 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
 
     # 1) existující řádky: duplicity (stejný název+firma+místo) se archivují, nejstarší zůstává
     rows = notion.load_rows()
-    keep, dups = {}, []
-    for row in sorted(rows, key=lambda r: r["created"]):
-        if row["key"] in keep:
-            dups.append(row["id"])
-        else:
-            keep[row["key"]] = row
+    keep, dups = split_duplicates(rows)
     result["duplicates_archived"] = 0
     for page_id in dups:
         if not dry_run:
@@ -468,17 +515,40 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
         result["duplicates_archived"] += 1
     existing_urls = {row["url"] for row in rows}
 
-    # 2) nové kandidáty: přeskočit, pokud už URL nebo stejná pozice (název+firma+místo) v Notionu je
-    for j in candidates.values():
-        if is_excluded(j):
-            result["excluded"] += 1
-            continue
-        key = tuple(s.strip().lower() for s in (j.title, j.company, j.place))
-        if j.url in existing_urls or key in keep:
-            result["skipped_existing"] += 1
-            continue
-        if not dry_run:
-            notion.create(j)
-        keep[key] = None  # stejná pozice se v tomto běhu nezapíše dvakrát
-        result["new"].append(j)
+    # 2) nové kandidáty: obor + lokalita, duplicity, nakonec řidičský průkaz z detailu (GET, jen u zbylých)
+    result["excluded_licence"] = 0
+    result["excluded_night"] = 0
+    result["excluded_vzv"] = 0
+    result["write_errors"] = 0
+    result["licence_unchecked"] = 0
+    robots_cache: dict = {}
+    with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
+        for j in candidates.values():
+            if is_excluded(j) or not place_ok(j.place):
+                result["excluded"] += 1
+                continue
+            key = tuple(s.strip().lower() for s in (j.title, j.company, j.place))
+            if j.url in existing_urls or key in keep:
+                result["skipped_existing"] += 1
+                continue
+            text = fetch_detail_text(client, j, robots_cache)
+            if text is not None and requires_driving_licence(text):
+                result["excluded_licence"] += 1
+                continue
+            if text is not None and has_night_shift(text):
+                result["excluded_night"] += 1
+                continue
+            if text is not None and VZV_RE.search(text):
+                result["excluded_vzv"] += 1
+                continue
+            if text is None:  # detail nešlo ověřit -> nabídka se uloží, ale počítá se
+                result["licence_unchecked"] += 1
+            if not dry_run:
+                try:
+                    notion.create(j)
+                except httpx.HTTPError:  # už zapsané nabídky se musí dostat do výsledku (a Telegramu)
+                    result["write_errors"] += 1
+                    continue
+            keep[key] = None  # stejná pozice se v tomto běhu nezapíše dvakrát
+            result["new"].append(j)
     return result

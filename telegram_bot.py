@@ -2,6 +2,7 @@
 
 Spouští pouze scraping (core.run), nic jiného.
 """
+import html
 import os
 import time
 
@@ -22,16 +23,19 @@ def handle(update: dict, allowed_chat: str) -> None:
     if not keywords:
         core.telegram_send("Použití: /hledej python analytik")
         return
-    core.telegram_send(f"Hledám: {', '.join(keywords)} (chvíli to potrvá)")
+    esc = lambda s: html.escape(s, quote=False)  # telegram_send posílá HTML
+    core.telegram_send(esc(f"Hledám: {', '.join(keywords)} (chvíli to potrvá)"))
     try:
         res = core.run(keywords)
     except SystemExit as e:
-        core.telegram_send(f"Chyba: {e}")
+        core.telegram_send(esc(f"Chyba: {e}"))
         return
-    portals = "; ".join(f"{n}: {s}" for n, s in res["portals"].items())
+    except Exception as e:  # jen typ chyby: text httpx chyb může obsahovat URL
+        core.telegram_send(f"Hledání selhalo: {type(e).__name__}")
+        return
     if res["new"]:
         core.notify_telegram(res["new"])
-    core.telegram_send(f"Hotovo. Nových: {len(res['new'])}, už existuje: {res['skipped_existing']}. {portals}")
+    core.notify_done(res)
 
 
 def main():
@@ -51,8 +55,8 @@ def main():
                 for u in r.json().get("result", []):
                     offset = u["update_id"] + 1
                     handle(u, chat)
-            except httpx.HTTPError as e:
-                print(f"Telegram chyba: {type(e).__name__}, zkusím znovu")
+            except Exception as e:  # bot nesmí spadnout; jen typ, text chyby může obsahovat token v URL
+                print(f"Chyba: {type(e).__name__}, zkusím znovu")
                 time.sleep(5)
 
 

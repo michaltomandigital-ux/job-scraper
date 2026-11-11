@@ -13,9 +13,7 @@ def run_scrape(keywords: list[str], dry_run: bool = True) -> str:
         res = core.run(keywords, dry_run=dry_run)
     except SystemExit as e:
         return f"Chyba: {e}"
-    portals = "; ".join(f"{n}: {s}" for n, s in res["portals"].items())
-    verb = "by se uložilo" if dry_run else "uloženo"
-    return f"Nových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}. Portály: {portals}"
+    return core.summary(res, dry_run)
 
 
 if __name__ == "__main__":
