@@ -66,9 +66,10 @@ JENPRACE_CZ = {
     "stop_heading": "Podívejte se i na jiné nabídky",  # za tímto nadpisem jsou jen doporučené nabídky
 }
 
-# Nesouvisející obory: nabídka, jejíž NÁZEV obsahuje některý z těchto výrazů (bez ohledu na velikost písmen),
+# SLOVNÍK FILTRU (pořadí: BLACKLIST_HARD > noc/VZV > WHITELIST > BLACKLIST; úprava slov viz CLAUDE.md)
+# BLACKLIST: nabídka, jejíž NÁZEV obsahuje některý z těchto výrazů (bez ohledu na velikost písmen),
 # se do Notionu neukládá. Ostatní se uloží a filtr relevance je na uživateli v Notionu.
-EXCLUDE_TITLE_WORDS = [
+BLACKLIST = [
     "recepční", "číšník", "číšnic", "servírk", "pokladní", "pokladník",
     "uklízeč", "uklízečk",
     "brigádník", "kuchař", "řidič", "zdravotní sestra", "pečovatel",
@@ -81,13 +82,13 @@ EXCLUDE_TITLE_WORDS = [
 ]
 # VZV (vysokozdvižný vozík): jakákoli zmínka v názvu nebo detailu nabídku vyřadí, i "VZV výhodou" a "bez nutnosti VZV".
 VZV_RE = re.compile(r"\bVZV\b|vysokozdvižn", re.I)
-# Vyřadit natvrdo podle názvu (má přednost před KEEP_TITLE_WORDS).
-HARD_EXCLUDE_TITLE_WORDS = [
+# BLACKLIST_HARD: vyřadí vždy podle názvu, WHITELIST ho nepřebije.
+BLACKLIST_HARD = [
     "finanční poradc", "finanční poradk", "pojišťovací poradc", "pojišťovací poradk",
     "f2f", "door to door", "door-to-door", "prodavač",
 ]
-# Výslovně chtěné pozice: název s těmito výrazy se seznamem EXCLUDE_TITLE_WORDS nevyřadí ("Skladník – řidič").
-KEEP_TITLE_WORDS = ("skladn",)
+# WHITELIST: název s těmito výrazy se seznamem BLACKLIST nevyřadí ("Skladník – řidič"). BLACKLIST_HARD, noc a VZV ho přebijí.
+WHITELIST = ("skladn",)
 # Název „prověřit": nabídku ponechá/vyřadí signály v popisu (classify_description).
 REVIEW_TITLE_RE = re.compile(
     r"telesales|telemarketing|account manager|key account|prodejc|obchodník|obchodnic|obchodní zástupc"
@@ -173,15 +174,15 @@ def parse_cz_date(text: str, today: date | None = None) -> date | None:
 
 
 def is_excluded(job: "Job") -> bool:
-    """True, když název pozice patří do nesouvisejícího oboru (EXCLUDE_TITLE_WORDS)."""
+    """True, když název pozice patří do nesouvisejícího oboru (BLACKLIST)."""
     t = job.title.lower()
     if NIGHT_RE.search(t) and not NIGHT_NEG_RE.search(t) or VZV_RE.search(t):
         return True
-    if any(w in t for w in HARD_EXCLUDE_TITLE_WORDS):
+    if any(w in t for w in BLACKLIST_HARD):
         return True
-    if any(w in t for w in KEEP_TITLE_WORDS):
+    if any(w in t for w in WHITELIST):
         return False
-    return any(w in t for w in EXCLUDE_TITLE_WORDS)
+    return any(w in t for w in BLACKLIST)
 
 
 def needs_review(job: "Job") -> bool:

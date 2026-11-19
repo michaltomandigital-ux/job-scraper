@@ -490,3 +490,13 @@ def test_second_live_run_is_refused_while_lock_is_held(monkeypatch, tmp_path):
             core.run(["x"])
         assert core.run(["x"], dry_run=True) == {"ok": True}  # dry-run zámek nepotřebuje
     assert core.run(["x"]) == {"ok": True} and not core.LOCK_FILE.exists()
+
+
+def test_filter_order_excluded_blacklist_whitelist():
+    """Pořadí: BLACKLIST_HARD > noc/VZV > WHITELIST > BLACKLIST."""
+    job = lambda t: core.Job(t, "F", "Pardubice", "jobs.cz", "u")
+    assert core.is_excluded(job("Recepční"))                    # BLACKLIST
+    assert not core.is_excluded(job("Skladník – řidič"))        # WHITELIST přebije BLACKLIST
+    assert core.is_excluded(job("Skladník – noční směny"))      # noc přebije WHITELIST
+    assert core.is_excluded(job("Skladník VZV"))                # VZV přebije WHITELIST
+    assert core.is_excluded(job("Prodavač a skladník"))         # BLACKLIST_HARD přebije WHITELIST
