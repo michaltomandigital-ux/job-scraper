@@ -6,8 +6,10 @@ import html
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -29,9 +31,13 @@ COL_PLACE = "Místo výkonu práce"
 COL_PORTAL = "Pracovní portál"
 COL_URL = "URL pozice"
 COL_STATUS = "Stav"
+COL_NOTE = "Poznámka"  # volitelný textový sloupec; když existuje, zapíše se do něj štítek MANUAL_LABEL
 STATUS_NEW = "Nový"
+MANUAL_LABEL = "ručně ověřit"
 
 ALLOWED_POST_HOSTS = {"api.notion.com", "api.telegram.org"}
+LOCK_FILE = Path(__file__).with_name(".run.lock")
+LOCK_MAX_AGE = 3600  # s; starší zámek je po spadlém běhu
 
 # --- selektory portálů (při změně layoutu upravit jen zde)
 JOBS_CZ = {
@@ -75,8 +81,30 @@ EXCLUDE_TITLE_WORDS = [
 ]
 # VZV (vysokozdvižný vozík): jakákoli zmínka v názvu nebo detailu nabídku vyřadí, i "VZV výhodou" a "bez nutnosti VZV".
 VZV_RE = re.compile(r"\bVZV\b|vysokozdvižn", re.I)
-# Výslovně chtěné pozice: název s těmito výrazy se seznamem výše nevyřadí ("Prodavač/pokladní", "Skladník – řidič VZV").
-KEEP_TITLE_WORDS = ("skladn", "prodav")
+# Vyřadit natvrdo podle názvu (má přednost před KEEP_TITLE_WORDS).
+HARD_EXCLUDE_TITLE_WORDS = [
+    "finanční poradc", "finanční poradk", "pojišťovací poradc", "pojišťovací poradk",
+    "f2f", "door to door", "door-to-door", "prodavač",
+]
+# Výslovně chtěné pozice: název s těmito výrazy se seznamem EXCLUDE_TITLE_WORDS nevyřadí ("Skladník – řidič").
+KEEP_TITLE_WORDS = ("skladn",)
+# Název „prověřit": nabídku ponechá/vyřadí signály v popisu (classify_description).
+REVIEW_TITLE_RE = re.compile(
+    r"telesales|telemarketing|account manager|key account|prodejc|obchodník|obchodnic|obchodní zástupc"
+    r"|obchodní poradc|klientský poradc|operátor\w* call centra|\bsales\b", re.I)
+# Signály v popisu (regulární výrazy, bez ohledu na velikost písmen; počítají se různé signály, ne výskyty).
+SALES_SIGNALS = [
+    r"proviz", r"prodejní cíl", r"plnění\s+(\w+\s+)?plán", r"akvizic", r"získávání nových klient",
+    r"oslovov|oslovován", r"odchozí\s+hovor", r"cold call", r"uzavírání obchod",
+    r"\bIČO\b", r"živnostenský list", r"neomezen\w*\s+výdělk",
+]
+SERVICE_SIGNALS = [
+    r"stávající\w*\s+klient", r"péče o klient", r"příchozí\s+hovor", r"řešení požadavk",
+    r"zákaznick\w*\s+servis", r"reklamac", r"administrativ", r"správ\w*\s+klient",
+    r"onboarding", r"\bpodpor(a|y|e|u|ou)\b", r"fixní mzd", r"ticket", r"\bCRM\b",
+]
+# Tyto signály vyřadí nabídku hned, i když je servisních víc.
+SALES_HARD_RE = re.compile(r"proviz|\bIČO\b|odchozí\s+hovor", re.I)
 # Noční směny (název i detail): "nočn" jen na začátku slova, ať "vánoční" neprojde jako noční.
 NIGHT_RE = re.compile(r"\bnočn", re.I)
 NIGHT_NEG_RE = re.compile(r"\bbez\b|\bnení\b|\bnejsou\b|\bnebud|\bžádn|\bnemus|vyhn", re.I)
@@ -93,6 +121,7 @@ PLACE_WORDS = [
 # Řidičský průkaz jako podmínka: řádek detailu zmiňuje průkaz/oprávnění a není to "výhoda".
 LICENCE_RE = re.compile(r"řidičsk[ýé]\s+(průkaz|oprávnění)|řidičák", re.I)
 LICENCE_OPTIONAL_RE = re.compile(r"výhod|vítán|není podmínk|není nutn|nepovinn|\bplus\b", re.I)
+LICENCE_NEXT_RE = re.compile(r"^\W*(výhodou|výhoda|vítán\w*|plus)\W*$", re.I)  # celý další řádek je jen toto slovo
 
 CZ_MONTHS = {
     "ledna": 1, "února": 2, "března": 3, "dubna": 4, "května": 5, "června": 6,
@@ -148,9 +177,28 @@ def is_excluded(job: "Job") -> bool:
     t = job.title.lower()
     if NIGHT_RE.search(t) and not NIGHT_NEG_RE.search(t) or VZV_RE.search(t):
         return True
+    if any(w in t for w in HARD_EXCLUDE_TITLE_WORDS):
+        return True
     if any(w in t for w in KEEP_TITLE_WORDS):
         return False
     return any(w in t for w in EXCLUDE_TITLE_WORDS)
+
+
+def needs_review(job: "Job") -> bool:
+    """True, když je název „prověřit“ (REVIEW_TITLE_RE) a rozhodnou signály v popisu."""
+    return bool(REVIEW_TITLE_RE.search(job.title))
+
+
+def classify_description(text: str) -> str:
+    """'drop' | 'keep' | 'manual' podle prodejních a servisních signálů v popisu.
+
+    Provize, IČO nebo odchozí hovory -> drop. Jinak víc prodejních -> drop, víc servisních -> keep,
+    remíza nebo žádné signály -> manual (ponechat se štítkem MANUAL_LABEL)."""
+    if SALES_HARD_RE.search(text):
+        return "drop"
+    count = lambda sigs: sum(1 for x in sigs if re.search(x, text, re.I))
+    sales, service = count(SALES_SIGNALS), count(SERVICE_SIGNALS)
+    return "drop" if sales > service else "keep" if service > sales else "manual"
 
 
 def place_ok(place: str) -> bool:
@@ -159,17 +207,18 @@ def place_ok(place: str) -> bool:
     return not p or any(w in p for w in PLACE_WORDS)
 
 
-def _line_hit(text: str, pos: re.Pattern, neg: re.Pattern, look_next: bool = False) -> bool:
-    """True, když některý řádek odpovídá `pos` a zápor `neg` na něm není (s look_next ani na dalším řádku)."""
+def _line_hit(text: str, pos: re.Pattern, neg: re.Pattern, next_neg: re.Pattern | None = None) -> bool:
+    """True, když některý řádek odpovídá `pos`, není na něm zápor `neg` a (s next_neg) další řádek není samotné „výhodou“ apod."""
     lines = text.split("\n")
-    return any(pos.search(line) and not neg.search(line + " " + nxt if look_next else line)
+    return any(pos.search(line) and not neg.search(line) and not (next_neg and next_neg.search(nxt))
                for line, nxt in zip(lines, lines[1:] + [""]))
 
 
 def requires_driving_licence(text: str) -> bool:
     """True, když text detailu požaduje řidičský průkaz (zmínka s 'výhodou'/'vítán' se nepočítá)."""
-    # "výhodou" bývá v samostatném tagu (<strong>) -> get_text("\n") ho přesune na další řádek
-    return _line_hit(text, LICENCE_RE, LICENCE_OPTIONAL_RE, look_next=True)
+    # "výhodou" bývá v samostatném tagu (<strong>) -> get_text("\n") ho přesune na další řádek;
+    # nadpis dalšího oddílu ("Zaměstnanecké výhody") ale průkaz nepovinným nedělá, proto jen řádek s tímto slovem samotným
+    return _line_hit(text, LICENCE_RE, LICENCE_OPTIONAL_RE, LICENCE_NEXT_RE)
 
 
 def has_night_shift(text: str) -> bool:
@@ -314,7 +363,7 @@ def search_portal(client: httpx.Client, name: str, keywords: list[str]) -> tuple
                 for j in new:
                     if j.posted is None or j.posted >= cutoff:
                         found[j.url] = j
-                if not new or all_dated_old:  # nové stránky už nic nepřinesou
+                if all_dated_old:  # další stránky už budou jen starší (opakované nabídky z jiného dotazu nevadí, MAX_PAGES strop drží)
                     break
     if not any_allowed:
         raise RobotsDisallowed(name)
@@ -357,7 +406,9 @@ class Notion:
         ds = self.c.get(f"/data_sources/{self.ds_id}")
         if ds.status_code != 200:
             raise SystemExit(f"Notion: data source nelze načíst ({ds.status_code}), ověř sdílení integrace")
-        self._check_schema(ds.json().get("properties", {}))
+        props = ds.json().get("properties", {})
+        self._check_schema(props)
+        self.has_note = COL_NOTE in props
 
     @staticmethod
     def _check_schema(props: dict):
@@ -396,7 +447,7 @@ class Notion:
         r = _send(self.c, "PATCH", f"https://api.notion.com/v1/pages/{page_id}", json={"archived": True})
         r.raise_for_status()
 
-    def create(self, j: Job):
+    def create(self, j: Job, note: str = ""):
         txt = lambda s: [{"text": {"content": s[:2000]}}]
         body = {
             "parent": {"type": "data_source_id", "data_source_id": self.ds_id},
@@ -408,6 +459,8 @@ class Notion:
                 COL_URL: {"url": j.url},
                 COL_STATUS: {"status": {"name": STATUS_NEW}},
             }}
+        if note and self.has_note:
+            body["properties"][COL_NOTE] = {"rich_text": txt(note)}
         r = _send(self.c, "POST", "https://api.notion.com/v1/pages", json=body)
         r.raise_for_status()
 
@@ -458,9 +511,13 @@ def summary(res: dict, dry_run: bool = False) -> str:
     g = lambda k: res.get(k, 0)
     verb = "by se uložilo" if dry_run else "uloženo"
     portals = "; ".join(f"{n}: {s}" for n, s in res["portals"].items())
+    first = f" (první: {res['first_write_error']})" if res.get("first_write_error") else ""
     return (f"Nových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
-            f"vyřazeno filtry: {g('excluded') + g('excluded_licence') + g('excluded_night') + g('excluded_vzv')}, "
-            f"chyby zápisu: {g('write_errors')}\nPortály: {portals}")
+            f"vyřazeno (obor/lokalita): {g('excluded')}, (řidičský průkaz): {g('excluded_licence')}, "
+            f"(noční směny): {g('excluded_night')}, (VZV): {g('excluded_vzv')}, (prodej): {g('excluded_sales')}, "
+            f"ručně ověřit: {g('manual_check')}, detail neověřen: {g('licence_unchecked')}, "
+            f"duplicit {'k archivaci' if dry_run else 'archivováno'}: {g('duplicates_archived')}, "
+            f"chyby zápisu: {g('write_errors')}{first}\nPortály: {portals}")
 
 
 def notify_done(res: dict) -> None:
@@ -469,11 +526,18 @@ def notify_done(res: dict) -> None:
 
 
 # ---------------------------------------------------------------- hlavní běh
+def _dedupable(key: tuple) -> bool:
+    """Klíč (název, firma, místo) bez firmy i místa nic neodlišuje (rozbitý selektor) -> podle něj se nededuplikuje."""
+    return bool(key[1] or key[2])
+
+
 def split_duplicates(rows: list[dict]) -> tuple[dict, list[str]]:
     """Řádky -> ({klíč: ponechaný řádek}, [ID duplicit k archivaci]). Nejstarší zůstává."""
     keep, dups = {}, []
     # řádky s jiným stavem než "Nový" (uživatel s nimi pracoval) se nikdy nearchivují a mají přednost
     for row in sorted(rows, key=lambda r: (r["status"] == STATUS_NEW, r["created"])):
+        if not _dedupable(row["key"]):
+            continue
         if row["key"] in keep:
             if row["status"] == STATUS_NEW:
                 dups.append(row["id"])
@@ -482,8 +546,33 @@ def split_duplicates(rows: list[dict]) -> tuple[dict, list[str]]:
     return keep, dups
 
 
+@contextmanager
+def _run_lock():
+    """Zámek proti dvěma souběžným ostrým během (CLI + bot): jinak by oba zapsali stejnou nabídku."""
+    try:
+        if time.time() - LOCK_FILE.stat().st_mtime > LOCK_MAX_AGE:
+            LOCK_FILE.unlink()  # zámek po spadlém běhu
+    except FileNotFoundError:
+        pass
+    try:
+        os.close(os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        raise SystemExit("Jiný běh už probíhá (soubor .run.lock), zkus to za chvíli")
+    try:
+        yield
+    finally:
+        LOCK_FILE.unlink(missing_ok=True)
+
+
 def run(keywords: list[str], dry_run: bool = False) -> dict:
-    """Vrací {'new': [Job], 'skipped_existing': int, 'portals': {name: stav}}."""
+    """Vrací {'new': [Job], 'skipped_existing': int, 'portals': {name: stav}}. Ostrý běh drží zámek."""
+    if dry_run:  # jen čtení, zámek netřeba
+        return _run(keywords, dry_run)
+    with _run_lock():
+        return _run(keywords, dry_run)
+
+
+def _run(keywords: list[str], dry_run: bool) -> dict:
     load_dotenv()
     token, db_id = os.getenv("NOTION_TOKEN"), os.getenv("NOTION_DATABASE_ID")
     if not token or not db_id:
@@ -519,7 +608,10 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
     result["excluded_licence"] = 0
     result["excluded_night"] = 0
     result["excluded_vzv"] = 0
+    result["excluded_sales"] = 0
+    result["manual_check"] = 0
     result["write_errors"] = 0
+    result["first_write_error"] = ""
     result["licence_unchecked"] = 0
     robots_cache: dict = {}
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
@@ -528,7 +620,7 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
                 result["excluded"] += 1
                 continue
             key = tuple(s.strip().lower() for s in (j.title, j.company, j.place))
-            if j.url in existing_urls or key in keep:
+            if j.url in existing_urls or (_dedupable(key) and key in keep):
                 result["skipped_existing"] += 1
                 continue
             text = fetch_detail_text(client, j, robots_cache)
@@ -541,13 +633,25 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
             if text is not None and VZV_RE.search(text):
                 result["excluded_vzv"] += 1
                 continue
+            note = ""
+            if needs_review(j):  # titul „prověřit“: rozhodnou signály v popisu; bez detailu -> ručně ověřit
+                verdict = classify_description(text) if text is not None else "manual"
+                if verdict == "drop":
+                    result["excluded_sales"] += 1
+                    continue
+                if verdict == "manual":
+                    note = MANUAL_LABEL
+                    result["manual_check"] += 1
             if text is None:  # detail nešlo ověřit -> nabídka se uloží, ale počítá se
                 result["licence_unchecked"] += 1
             if not dry_run:
                 try:
-                    notion.create(j)
-                except httpx.HTTPError:  # už zapsané nabídky se musí dostat do výsledku (a Telegramu)
+                    notion.create(j, note)
+                except httpx.HTTPError as e:  # už zapsané nabídky se musí dostat do výsledku (a Telegramu)
                     result["write_errors"] += 1
+                    # jen stavový kód / typ chyby, ne text (URL)
+                    result["first_write_error"] = result["first_write_error"] or (
+                        str(e.response.status_code) if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
                     continue
             keep[key] = None  # stejná pozice se v tomto běhu nezapíše dvakrát
             result["new"].append(j)

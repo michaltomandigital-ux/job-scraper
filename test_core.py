@@ -16,7 +16,9 @@ read = lambda n: (FIX / n).read_text(encoding="utf-8")
 def test_is_excluded_by_title():
     mk = lambda t: core.Job(t, "f", "p", "jobs.cz", "https://www.jobs.cz/rpd/1/")
     assert core.is_excluded(mk("Recepční na ubytovně"))
-    assert not core.is_excluded(mk("Prodavač/ka - Choceň"))  # prodavač už není v seznamu
+    assert core.is_excluded(mk("Prodavač/ka - Choceň"))  # prodavač se vyřazuje natvrdo
+    assert core.is_excluded(mk("Finanční poradce - F2F"))
+    assert core.is_excluded(mk("Obchodník door to door"))
     assert not core.is_excluded(mk("Specialista prodeje - home office"))
     assert not core.is_excluded(mk("Obchodní zástupce v B2B"))
     assert core.is_excluded(mk("Operátor výroby - noční směny"))
@@ -26,8 +28,7 @@ def test_is_excluded_by_title():
     assert core.is_excluded(mk("Pracovník v sociálních službách"))
     assert core.is_excluded(mk("Pečovatelka / pečující"))
     assert core.is_excluded(mk("Asistent péče v domově pro seniory"))
-    assert not core.is_excluded(mk("Vánoční brigáda - prodavač"))  # "vánoční" není noční
-    assert not core.is_excluded(mk("Prodavač/pokladní"))  # chtěné pozice mají přednost před seznamem
+    assert not core.is_excluded(mk("Vánoční příprava skladu"))  # "vánoční" není noční
     assert not core.is_excluded(mk("Skladník - řidič"))
     assert core.is_excluded(mk("Skladník - řidič VZV"))  # VZV vyřadí vždy, i chtěnou pozici
     assert core.is_excluded(mk("Skladník (bez nutnosti VZV)"))
@@ -292,17 +293,18 @@ class _FakeNotion:
     def load_rows(self):
         return self.rows
 
-    def create(self, j):
+    def create(self, j, note=""):
         if self.fail:
             raise httpx.ConnectError("x")
         self.created.append(j)
+        self.notes = getattr(self, "notes", []) + [note]
 
     def archive(self, i):
         self.archived.append(i)
 
 
-def _run(monkeypatch, notion, dry_run, detail=""):
-    job = core.Job("Analytik", "Firma", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/1/")
+def _run(monkeypatch, notion, dry_run, detail="", title="Analytik"):
+    job = core.Job(title, "Firma", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/1/")
     monkeypatch.setenv("NOTION_TOKEN", "t")
     monkeypatch.setenv("NOTION_DATABASE_ID", "d")
     monkeypatch.setattr(core, "load_dotenv", lambda: None)
@@ -384,3 +386,107 @@ def test_rejected_offer_is_not_written_again(monkeypatch):
         n = _FakeNotion(rows=[row])
         res = _run(monkeypatch, n, False)
         assert n.created == [] and res["new"] == [] and res["skipped_existing"] == 1 and n.archived == []
+
+
+def test_needs_review_titles():
+    mk = lambda t: core.Job(t, "f", "p", "jobs.cz", "https://www.jobs.cz/rpd/1/")
+    assert core.needs_review(mk("Obchodní zástupce"))
+    assert core.needs_review(mk("Telesales operátor"))
+    assert core.needs_review(mk("Sales Specialist"))
+    assert not core.needs_review(mk("Team leader zákaznické podpory"))
+    assert not core.needs_review(mk("Salesforce administrátor"))
+
+
+def test_classify_description():
+    c = core.classify_description
+    assert c("Péče o stávající klienty, příchozí hovory, reklamace") == "keep"
+    assert c("Získávání nových klientů, akvizice, uzavírání obchodů, helpdesk podpora") == "drop"
+    assert c("Příchozí hovory, reklamace, tickety, CRM. Provize z prodeje") == "drop"  # provize vždy vyřadí
+    assert c("Práce na IČO, administrativa, reklamace, onboarding") == "drop"
+    assert c("Odchozí hovory i příchozí hovory, administrativa, reklamace") == "drop"
+    assert c("Akvizice nových zákazníků, reklamace") == "manual"  # remíza
+    assert c("Pracujeme v příjemném kolektivu") == "manual"  # žádné signály
+
+
+def test_review_title_run(monkeypatch):
+    t = "Obchodní zástupce"
+    n = _FakeNotion()
+    res = _run(monkeypatch, n, False, title=t, detail="Provizní systém, nábor")
+    assert res["excluded_sales"] == 1 and n.created == []
+    n = _FakeNotion()
+    res = _run(monkeypatch, n, False, title=t, detail="Reklamace, příchozí hovory")
+    assert len(n.created) == 1 and n.notes == [""] and res["manual_check"] == 0
+    n = _FakeNotion()
+    res = _run(monkeypatch, n, False, title=t, detail="Nic zvláštního")
+    assert n.notes == [core.MANUAL_LABEL] and res["manual_check"] == 1
+    n = _FakeNotion()  # detail nešel stáhnout -> ponechat, ručně ověřit
+    res = _run(monkeypatch, n, False, title=t, detail=None)
+    assert n.notes == [core.MANUAL_LABEL] and res["manual_check"] == 1
+
+
+# ---------------------------------------------------------------- opravy z auditu
+def test_search_continues_when_page_is_all_repeats(monkeypatch):
+    """Stránka 1 jen z už nalezených nabídek (překryv měst) nesmí zastavit čtení stránky 2."""
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(200, text="")
+        page = req.url.params.get("page")
+        if "hradec" in req.url.path:
+            return httpx.Response(200, text=f"<html>{_card(1, 'Přidáno dnes')}</html>" if page == "1" else "<html></html>")
+        body = _card(1, "Přidáno dnes") if page == "1" else _card(2, "Přidáno dnes") if page == "2" else ""
+        return httpx.Response(200, text=f"<html>{body}</html>")
+    jobs, _ = _search(monkeypatch, handler)
+    assert {j.url for j in jobs} == {"https://www.jobs.cz/rpd/1/", "https://www.jobs.cz/rpd/2/"}
+
+
+def test_licence_heading_next_line_does_not_make_it_optional():
+    assert core.requires_driving_licence("Požadujeme řidičský průkaz sk. B\nZaměstnanecké výhody\n13. plat")
+
+
+def test_blank_company_and_place_are_not_deduplicated():
+    row = lambda id: {"id": id, "key": ("skladník", "", ""), "status": "Nový", "created": id}
+    keep, dups = core.split_duplicates([row("1"), row("2")])
+    assert dups == [] and keep == {}
+
+
+def test_write_error_reason_is_status_code_only(monkeypatch):
+    def fail(j, note=""):
+        raise httpx.HTTPStatusError("url s tokenem", request=httpx.Request("POST", "https://api.notion.com/v1/pages"),
+                                    response=httpx.Response(400))
+    n = _FakeNotion()
+    n.create = fail
+    res = _run(monkeypatch, n, False)
+    assert res["write_errors"] == 1 and res["first_write_error"] == "400"
+    assert "(první: 400)" in core.summary(res) and "token" not in core.summary(res)
+
+
+def test_send_retries_after_429(monkeypatch):
+    slept, calls = [], []
+    monkeypatch.setattr(core.time, "sleep", slept.append)
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(429, headers={"Retry-After": "3"}) if len(calls) == 1 else httpx.Response(200)
+    r = core._send(httpx.Client(transport=httpx.MockTransport(handler)), "POST", "https://api.notion.com/v1/pages")
+    assert r.status_code == 200 and len(calls) == 2 and slept == [3.0]
+
+
+def test_load_rows_follows_pagination():
+    def handler(req):
+        cursor = __import__("json").loads(req.content).get("start_cursor")
+        page = lambda i: {"id": i, "created_time": "2026-11-0" + i, "properties": {core.COL_TITLE: {"title": [{"plain_text": "T" + i}]}}}
+        if cursor is None:
+            return httpx.Response(200, json={"results": [page("1")], "has_more": True, "next_cursor": "c2"})
+        return httpx.Response(200, json={"results": [page("2")], "has_more": False})
+    n = core.Notion.__new__(core.Notion)
+    n.c, n.ds_id = httpx.Client(transport=httpx.MockTransport(handler)), "ds"
+    assert [r["id"] for r in n.load_rows()] == ["1", "2"]
+
+
+def test_second_live_run_is_refused_while_lock_is_held(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "LOCK_FILE", tmp_path / ".run.lock")
+    monkeypatch.setattr(core, "_run", lambda kws, dry: {"ok": True})
+    with core._run_lock():
+        with pytest.raises(SystemExit):
+            core.run(["x"])
+        assert core.run(["x"], dry_run=True) == {"ok": True}  # dry-run zámek nepotřebuje
+    assert core.run(["x"]) == {"ok": True} and not core.LOCK_FILE.exists()

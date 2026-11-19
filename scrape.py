@@ -16,11 +16,7 @@ def main():
     res = core.run(args.keywords, dry_run=args.dry_run)
     for name, state in res["portals"].items():
         print(f"[{name}] {state}")
-    verb = "by se uložilo" if args.dry_run else "uloženo"
-    print(f"\nNových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
-          f"vyřazeno (obor/lokalita): {res['excluded']}, vyřazeno (řidičský průkaz): {res['excluded_licence']}, vyřazeno (noční směny v detailu): {res['excluded_night']}, vyřazeno (VZV v detailu): {res['excluded_vzv']}, "
-          f"detail neověřen: {res['licence_unchecked']}, duplicit {'k archivaci' if args.dry_run else 'archivováno'}: "
-          f"{res['duplicates_archived']}, chyby zápisu: {res['write_errors']}")
+    print("\n" + core.summary(res, args.dry_run))
     for j in res["new"]:
         print(f"- {j.title} | {j.company} | {j.place} | {j.url}")
 
