@@ -489,15 +489,21 @@ def test_filter_order_excluded_blacklist_whitelist():
 
 
 def test_is_relevant():
-    job = lambda t: core.Job(t, "F", "Pardubice", "jobs.cz", "u")
-    pad = " " * 1000  # kratší detail je neověřitelný a projde
+    job = lambda t, c="F": core.Job(t, c, "Pardubice", "jobs.cz", "u")
+    pad = " " * 1000  # kratší detail je neověřitelný, potvrzení se přeskočí
     assert core.is_relevant(job("Specialista zákaznické podpory"), "reklamace, back office" + pad)  # název + detail
     assert not core.is_relevant(job("Revizní technik | Technická podpora"), "technická podpora" + pad)  # název bez potvrzení
     assert not core.is_relevant(job("Vedoucí obchodu | Technické B2B"), "reklamace, back office" + pad)  # zúženo
-    assert core.is_relevant(job("Specialista"), None)                       # detail nedostupný -> projde
-    assert core.is_relevant(job("Bankéř"), "bankéř")                        # krátký detail -> projde
-    assert core.is_relevant(job("Specialista"), "reklamace, back office, referent" + pad)  # bez názvu: 3 zásahy
-    assert not core.is_relevant(job("Programátor"), "reklamace, back office" + pad)  # 2 zásahy bez názvu nestačí
+    assert core.is_relevant(job("Bankéř"), "bankéř")                        # krátký detail + zásah v názvu
+    assert core.is_relevant(job("Konzultant centra služeb zákazníkům"), None)
+    # bez zásahu v názvu nabídku nezachrání ani detail, ani krátký/chybějící detail
+    assert not core.is_relevant(job("Autoklempíř"), "reklamace, back office, referent" + pad)
+    assert not core.is_relevant(job("Montér/opravář plynovodů"), None)
+    assert not core.is_relevant(job("Technik elektromontáže"), "")
+    # státní sektor podle zaměstnavatele
+    assert core.is_relevant(job("Specialista pro CS", "Úřad práce České republiky"), None)
+    assert core.is_relevant(job("Tajemník", "Město Kostelec nad Orlicí"), None)
+    assert not core.is_relevant(job("Účetní", "Dopravní podnik města Pardubic a.s."), None)
 
 
 # ---------------------------------------------------------------- opravy z druhého auditu

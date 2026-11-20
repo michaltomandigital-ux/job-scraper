@@ -123,8 +123,9 @@ PLACE_WORDS = [
 ]
 
 # Cílové obory (zákaznická podpora, back office, retail management, finance, veřejná správa, prodej, výroba):
-# regexy na kmeny profesí včetně podobných. Název s jedním zásahem projde; jinak musí detail zasáhnout aspoň
-# TARGET_MIN_DETAIL různých regexů. Detail nedostupný -> projde (nelze ověřit).
+# regexy na kmeny profesí včetně podobných. Nabídka MUSÍ mít zásah v názvu (nebo být od státního zaměstnavatele,
+# STATE_RE); detail ho jen potvrzuje (aspoň TARGET_MIN_DETAIL_TITLE různých regexů), sám nabídku nezachrání.
+# Detail nedostupný/krátký -> potvrzení se přeskočí (nelze ověřit), zásah v názvu je ale nutný.
 # shortcut: slovník kmenů, ne sémantika; šum/chybějící profese doladit tady, až uvidíš první běhy.
 TARGET = [
     r"zákaznick\w*\s+(podpor|péč|servis|služb|linka|centr|asistent|specialist|operátor)", r"technick\w*\s+podpor",
@@ -133,10 +134,11 @@ TARGET = [
     r"fakturant|fakturac", r"koordinátor\w*\s+servis|servisní\s+koordinátor", r"sales support|asistent\w*\s+prodeje|obchodní asistent",
     r"vedoucí\s+(prodejn|směny|úseku|pobočky|provozovny)|zástupce\s+vedoucí", r"store manager",
     r"bankéř|bankovní\s+(poradc|úředn|pracovn)|klientsk\w*\s+(pracovn|servis|centr|poradc|specialist)",
-    r"přepážk|pošt[ay]\b|pojišťov", r"podatelna|podatelen|úředník|matrik|státní správ|úřad práce|OSSZ|finanční úřad",
-    r"prodejc|inside sales|telefonick\w*\s+prodej|prodej\w*\s+elektr", r"montáž|montážní|montážník|operátor\w*\s+výrob|kompletac",
+    r"přepážk|pošt[ay]\b|pojišťov|služeb\s+zákazník|konzultant\w*\s+centra", r"podatelna|podatelen|úředník|matrik|státní správ|úřad práce|OSSZ|finanční úřad",
+    r"prodejc|inside sales|telefonick\w*\s+prodej|prodej\w*\s+elektr", r"\bmontáž|\bmontážní|\bmontážník|operátor\w*\s+výrob|kompletac",
 ]
-TARGET_MIN_DETAIL = 3        # název bez zásahu: detail musí zasáhnout aspoň tolik různých regexů
+# Státní sektor podle zaměstnavatele (firma): úřady, ministerstva, města/obce, kraje, pošta, policie, soudy.
+STATE_RE = re.compile(r"úřad|ministerstv|\bměsto\b|\bměstsk|magistrát|\bobec\b|\bobecní|\bkraj\b|krajsk|česká pošta|policie|\bsoud\b", re.I)
 TARGET_MIN_DETAIL_TITLE = 2  # název se zásahem: detail ho musí potvrdit (jinak "Revizní technik | Technická podpora")
 TARGET_MIN_TEXT = 1000       # kratší detail = neověřitelný, nabídka projde
 TARGET_RE = [re.compile(x, re.I) for x in TARGET]
@@ -208,13 +210,15 @@ def is_excluded(job: "Job") -> bool:
 
 
 def is_relevant(job: "Job", text: str | None) -> bool:
-    """Pozici posuzuje název i detail (TARGET): zásah v názvu potřebuje potvrzení v detailu
-    (TARGET_MIN_DETAIL_TITLE), bez zásahu v názvu musí detail zasáhnout TARGET_MIN_DETAIL. Text None projde."""
+    """Nabídka musí mít zásah TARGET v názvu (detail ho jen potvrdí, TARGET_MIN_DETAIL_TITLE) nebo státního
+    zaměstnavatele (STATE_RE). Krátký/nedostupný detail potvrzení přeskočí, zásah v názvu ale zůstává nutný."""
+    if STATE_RE.search(job.company):
+        return True
+    if not any(r.search(job.title) for r in TARGET_RE):
+        return False
     if text is None or len(text) < TARGET_MIN_TEXT:  # prázdný/krátký detail (jobs.cz banky ~420 znaků) nelze posoudit
         return True
-    hits = sum(1 for r in TARGET_RE if r.search(text))
-    in_title = any(r.search(job.title) for r in TARGET_RE)
-    return hits >= (TARGET_MIN_DETAIL_TITLE if in_title else TARGET_MIN_DETAIL)
+    return sum(1 for r in TARGET_RE if r.search(text)) >= TARGET_MIN_DETAIL_TITLE
 
 
 def needs_review(job: "Job") -> bool:
