@@ -33,8 +33,6 @@ def handle(update: dict, allowed_chat: str) -> None:
     except Exception as e:  # jen typ chyby: text httpx chyb může obsahovat URL
         core.telegram_send(f"Hledání selhalo: {type(e).__name__}")
         return
-    if res["new"]:
-        core.notify_telegram(res["new"])
     core.notify_done(res)
 
 

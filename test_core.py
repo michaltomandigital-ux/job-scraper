@@ -16,7 +16,7 @@ read = lambda n: (FIX / n).read_text(encoding="utf-8")
 def test_is_excluded_by_title():
     mk = lambda t: core.Job(t, "f", "p", "jobs.cz", "https://www.jobs.cz/rpd/1/")
     assert core.is_excluded(mk("Recepční na ubytovně"))
-    assert core.is_excluded(mk("Prodavač/ka - Choceň"))  # prodavač se vyřazuje natvrdo
+    assert not core.is_excluded(mk("Prodavač/ka - Choceň"))  # prodavač už není na blacklistu (2026-11-20)
     assert core.is_excluded(mk("Finanční poradce - F2F"))
     assert core.is_excluded(mk("Obchodník door to door"))
     assert not core.is_excluded(mk("Specialista prodeje - home office"))
@@ -116,22 +116,6 @@ def test_send_urls_only_allowed_hosts():
 
 
 # ---------------------------------------------------------------- Telegram / MCP
-def test_notify_sends_nothing_without_new_jobs(monkeypatch):
-    sent = []
-    monkeypatch.setattr(core, "telegram_configured", lambda: True)
-    monkeypatch.setattr(core, "telegram_send", sent.append)
-    assert core.notify_telegram([]) is False and not sent
-    job = core.Job("Pozice", "Firma", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/1/")
-    assert core.notify_telegram([job]) is True
-    assert "Pozice" in sent[0] and "Firma" in sent[0] and "Pardubice" in sent[0] and "rpd/1" in sent[0]
-
-
-def test_notify_needs_tokens(monkeypatch):
-    monkeypatch.setattr(core, "telegram_configured", lambda: False)
-    job = core.Job("P", "F", "M", "jobs.cz", "u")
-    assert core.notify_telegram([job]) is False
-
-
 def test_bot_ignores_other_chats_and_other_commands(monkeypatch):
     import telegram_bot
     calls = []
@@ -149,11 +133,15 @@ def test_bot_ignores_other_chats_and_other_commands(monkeypatch):
 def test_bot_runs_scrape_for_own_chat(monkeypatch):
     import telegram_bot
     seen = {}
+    job = core.Job("Tajný název", "Firma", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/1/")
+    sent = []
     monkeypatch.setattr(core, "run", lambda kws, **k: seen.setdefault("kws", kws) and
-                        {"new": [], "skipped_existing": 0, "portals": {"jobs.cz": "ok (0)"}})
-    monkeypatch.setattr(core, "telegram_send", lambda t: None)
+                        {"new": [job], "skipped_existing": 0, "portals": {"jobs.cz": "ok (1)"}})
+    monkeypatch.setattr(core, "telegram_send", sent.append)
     telegram_bot.handle({"message": {"chat": {"id": 123}, "text": "/hledej python analytik"}}, "123")
     assert seen["kws"] == ["python", "analytik"]
+    assert len(sent) == 2 and sent[1].startswith("<b>Scraping dokončen</b>") and "Nových nabídek (uloženo): 1" in sent[1]
+    assert "Tajný název" not in sent[1] and "rpd/1" not in sent[1]  # jen počet, žádný výčet nabídek
 
 
 def test_mcp_tool_returns_short_summary(monkeypatch):
@@ -162,15 +150,6 @@ def test_mcp_tool_returns_short_summary(monkeypatch):
                                                            "portals": {"jobs.cz": "ok (5)"}})
     out = mcp_server.run_scrape(["python"], True)
     assert "2" in out and "3" in out and "jobs.cz" in out
-
-
-def test_notify_first_line_bold_and_escaped(monkeypatch):
-    sent = []
-    monkeypatch.setattr(core, "telegram_configured", lambda: True)
-    monkeypatch.setattr(core, "telegram_send", sent.append)
-    core.notify_telegram([core.Job("A <b> & B", "f", "p", "jobs.cz", "https://www.jobs.cz/rpd/1/")])
-    assert sent[0].startswith("<b>Nové pracovní nabídky: 1</b>")
-    assert "A &lt;b&gt; &amp; B" in sent[0]
 
 
 def test_place_ok():
@@ -199,12 +178,12 @@ def test_parse_cz_date_feb_29_in_common_year():
     assert core.parse_cz_date("29. února", date(2027, 3, 5)) is None  # dřív ValueError -> spadl celý portál
 
 
-def test_split_duplicates_keeps_oldest_and_worked_rows():
+def test_split_duplicates_keeps_newest_and_worked_rows():
     row = lambda id, status, created: {"id": id, "key": ("a", "f", "m"), "status": status, "created": created}
     rows = [row("new2", "Nový", "2026-11-03"), row("new1", "Nový", "2026-11-01"),
             row("sent", "Odesláno", "2026-11-05"), row("sent2", "Odesláno", "2026-11-06")]
     keep, dups = core.split_duplicates(rows)
-    assert keep[("a", "f", "m")]["id"] == "sent"  # řádek, se kterým uživatel pracoval, má přednost
+    assert keep[("a", "f", "m")]["id"] == "sent2"  # řádek, se kterým uživatel pracoval, má přednost
     assert sorted(dups) == ["new1", "new2"]  # jiný stav než "Nový" se nikdy nearchivuje
 
 
@@ -302,15 +281,19 @@ class _FakeNotion:
     def archive(self, i):
         self.archived.append(i)
 
+    def close(self):
+        self.closed = True
 
-def _run(monkeypatch, notion, dry_run, detail="", title="Analytik"):
-    job = core.Job(title, "Firma", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/1/")
+
+def _run(monkeypatch, notion, dry_run, detail="", title="Analytik", posted=None):
+    job = core.Job(title, "Firma", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/1/", posted)
     monkeypatch.setenv("NOTION_TOKEN", "t")
     monkeypatch.setenv("NOTION_DATABASE_ID", "d")
     monkeypatch.setattr(core, "load_dotenv", lambda: None)
     monkeypatch.setattr(core, "Notion", lambda *a: notion)
     monkeypatch.setattr(core, "search_portal", lambda c, n, k: ([job] if n == "jobs.cz" else [], 0))
     monkeypatch.setattr(core, "fetch_detail_text", lambda *a: detail)
+    monkeypatch.setattr(core, "is_relevant", lambda *a: True)  # relevanci testuje test_is_relevant
     return core.run(["x"], dry_run=dry_run)
 
 
@@ -496,7 +479,122 @@ def test_filter_order_excluded_blacklist_whitelist():
     """Pořadí: BLACKLIST_HARD > noc/VZV > WHITELIST > BLACKLIST."""
     job = lambda t: core.Job(t, "F", "Pardubice", "jobs.cz", "u")
     assert core.is_excluded(job("Recepční"))                    # BLACKLIST
+    assert core.is_excluded(job("Montér/opravář plynovodů"))    # BLACKLIST (řemesla)
+    assert core.is_excluded(job("Ženy a reality | Rychnov"))    # BLACKLIST (reality)
+    assert not core.is_excluded(job("Pracovník/ice pro montáž sedaček"))  # montáž dál projde
     assert not core.is_excluded(job("Skladník – řidič"))        # WHITELIST přebije BLACKLIST
     assert core.is_excluded(job("Skladník – noční směny"))      # noc přebije WHITELIST
     assert core.is_excluded(job("Skladník VZV"))                # VZV přebije WHITELIST
-    assert core.is_excluded(job("Prodavač a skladník"))         # BLACKLIST_HARD přebije WHITELIST
+    assert core.is_excluded(job("Finanční poradce a skladník"))  # BLACKLIST_HARD přebije WHITELIST
+
+
+def test_is_relevant():
+    job = lambda t: core.Job(t, "F", "Pardubice", "jobs.cz", "u")
+    pad = " " * 1000  # kratší detail je neověřitelný a projde
+    assert core.is_relevant(job("Specialista zákaznické podpory"), "reklamace, back office" + pad)  # název + detail
+    assert not core.is_relevant(job("Revizní technik | Technická podpora"), "technická podpora" + pad)  # název bez potvrzení
+    assert not core.is_relevant(job("Vedoucí obchodu | Technické B2B"), "reklamace, back office" + pad)  # zúženo
+    assert core.is_relevant(job("Specialista"), None)                       # detail nedostupný -> projde
+    assert core.is_relevant(job("Bankéř"), "bankéř")                        # krátký detail -> projde
+    assert core.is_relevant(job("Specialista"), "reklamace, back office, referent" + pad)  # bez názvu: 3 zásahy
+    assert not core.is_relevant(job("Programátor"), "reklamace, back office" + pad)  # 2 zásahy bez názvu nestačí
+
+
+# ---------------------------------------------------------------- opravy z druhého auditu
+def _row(id, url, portal="jobs.cz", status="Nový", created="2026-11-01"):
+    return {"id": id, "url": url, "key": core._key("Analytik", "Firma", "Pardubice"),
+            "created": created, "status": status}
+
+
+def test_same_offer_on_other_portal_is_not_written_again(monkeypatch):
+    n = _FakeNotion(rows=[_row("r1", "https://www.jenprace.cz/nabidka/1", portal="jenprace.cz")])
+    res = _run(monkeypatch, n, False)  # kandidát je jobs.cz se stejným názvem, firmou, místem -> jeden řádek
+    assert n.created == [] and res["skipped_existing"] == 1 and n.archived == []
+
+
+def test_same_offer_on_same_portal_is_still_skipped(monkeypatch):
+    n = _FakeNotion(rows=[_row("r1", "https://www.jobs.cz/rpd/99/")])  # jiné URL (repost), stejný portál
+    res = _run(monkeypatch, n, False)
+    assert n.created == [] and res["skipped_existing"] == 1
+
+
+def test_split_duplicates_merges_across_portals():
+    keep, dups = core.split_duplicates([_row("a", "u1", "jobs.cz"), _row("b", "u2", "jenprace.cz", created="2026-11-02")])
+    assert dups == ["a"] and keep[("analytik", "firma", "pardubice")]["id"] == "b"  # starší pryč, novější zůstává, na portálu nezáleží
+
+
+def test_load_rows_key_ignores_portal():
+    page = {"id": "1", "created_time": "t", "properties": {
+        core.COL_TITLE: {"title": [{"plain_text": "Analytik "}]}, core.COL_COMPANY: {"rich_text": [{"plain_text": "Firma"}]},
+        core.COL_PLACE: {"rich_text": [{"plain_text": "Pardubice"}]}, core.COL_PORTAL: {"select": {"name": "jenprace.cz"}}}}
+    n = core.Notion.__new__(core.Notion)
+    n.c = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"results": [page], "has_more": False})))
+    n.ds_id = "ds"
+    assert n.load_rows()[0]["key"] == ("analytik", "firma", "pardubice")
+
+
+def test_run_archives_duplicates_but_dry_run_does_not(monkeypatch):
+    rows = [_row("old", "u1"), _row("newer", "u2", created="2026-11-03"), _row("worked", "u3", status="Odesláno", created="2026-11-05")]
+    n = _FakeNotion(rows=rows)
+    res = _run(monkeypatch, n, False)
+    assert sorted(n.archived) == ["newer", "old"] and res["duplicates_archived"] == 2  # řádek se změněným stavem má přednost a zůstává
+    n = _FakeNotion(rows=rows)
+    res = _run(monkeypatch, n, True)
+    assert n.archived == [] and res["duplicates_archived"] == 2  # dry-run jen spočítá
+
+
+def test_notion_client_is_closed_after_run(monkeypatch):
+    n = _FakeNotion()
+    _run(monkeypatch, n, False)
+    assert n.closed
+    n = _FakeNotion(fail=True)
+    n.load_rows = lambda: 1 / 0  # i při chybě se klient zavře
+    with pytest.raises(ZeroDivisionError):
+        _run(monkeypatch, n, False)
+    assert n.closed
+
+
+def test_telegram_send_splits_long_text_without_losing_lines(monkeypatch):
+    sent = []
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+    monkeypatch.setattr(core, "_send", lambda c, m, u, **kw: sent.append(kw["json"]["text"]) or httpx.Response(200))
+    core.telegram_send(chr(10).join(f"řádek {i} " + "x" * 90 for i in range(200)))
+    assert len(sent) > 1 and all(len(t) <= 4000 for t in sent)
+    assert sum(t.count(chr(10)) for t in sent) == 200  # žádný řádek se neztratil ani nezdvojil
+
+
+def test_stale_lock_is_ignored_and_removed(monkeypatch, tmp_path):
+    import os
+    import time
+    lock = tmp_path / ".run.lock"
+    lock.write_text("")
+    old = time.time() - core.LOCK_MAX_AGE - 10
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(core, "LOCK_FILE", lock)
+    with core._run_lock():
+        assert lock.exists()  # zámek převzal tento běh
+    assert not lock.exists()
+
+
+def test_newer_offer_replaces_older_row(monkeypatch):
+    old = _row("old", "https://www.jenprace.cz/nabidka/1", portal="jenprace.cz", created="2026-11-01T08:00:00.000Z")
+    n = _FakeNotion(rows=[old])
+    res = _run(monkeypatch, n, False, posted=date(2026, 11, 10))  # inzerát novější než zápis -> nový se zapíše, starý pryč
+    assert len(n.created) == 1 and n.archived == ["old"] and res["duplicates_archived"] == 1
+    n = _FakeNotion(rows=[old])
+    res = _run(monkeypatch, n, True, posted=date(2026, 11, 10))
+    assert n.created == [] and n.archived == [] and res["duplicates_archived"] == 1 and len(res["new"]) == 1  # dry-run
+    n = _FakeNotion(rows=[old])
+    res = _run(monkeypatch, n, False, posted=date(2026, 11, 1))  # stejný den: není novější, jinak by se přepisovalo při každém běhu
+    assert n.created == [] and n.archived == [] and res["skipped_existing"] == 1
+    worked = dict(old, status="Odesláno")
+    n = _FakeNotion(rows=[worked])
+    _run(monkeypatch, n, False, posted=date(2026, 11, 10))  # řádek, se kterým uživatel pracoval, se nearchivuje a nepřepisuje
+    assert n.created == [] and n.archived == []
+
+
+def test_failed_write_does_not_archive_older_row(monkeypatch):
+    n = _FakeNotion(fail=True, rows=[_row("old", "u", created="2026-11-01T08:00:00.000Z")])
+    res = _run(monkeypatch, n, False, posted=date(2026, 11, 10))
+    assert res["write_errors"] == 1 and n.archived == []  # starý řádek zůstane, když nový nejde zapsat

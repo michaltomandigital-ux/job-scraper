@@ -79,13 +79,16 @@ BLACKLIST = [
     "sociální služb", "sociálních služ", "sociální péče", "sociální poradce", "sociální asistent",
     "pečující", "pečovat", "asistent péče", "pracovník v přímé péči", "pracovník přímé péče",
     "domov pro", "domov seniorů", "domov důchodců", "chráněné bydlení",
+    # řemesla a technika, reality, IT (šum z běhu 2026-11-20)
+    "zámečník", "svářeč", "autoklempíř", "instalatér", "topenář", "montér", "elektromontáž", "plynovod",
+    "realit", "makléř", "investiční specialist", "systémový inženýr", "informačních systémů",
 ]
 # VZV (vysokozdvižný vozík): jakákoli zmínka v názvu nebo detailu nabídku vyřadí, i "VZV výhodou" a "bez nutnosti VZV".
 VZV_RE = re.compile(r"\bVZV\b|vysokozdvižn", re.I)
 # BLACKLIST_HARD: vyřadí vždy podle názvu, WHITELIST ho nepřebije.
 BLACKLIST_HARD = [
     "finanční poradc", "finanční poradk", "pojišťovací poradc", "pojišťovací poradk",
-    "f2f", "door to door", "door-to-door", "prodavač",
+    "f2f", "door to door", "door-to-door",
 ]
 # WHITELIST: název s těmito výrazy se seznamem BLACKLIST nevyřadí ("Skladník – řidič"). BLACKLIST_HARD, noc a VZV ho přebijí.
 WHITELIST = ("skladn",)
@@ -118,6 +121,25 @@ PLACE_WORDS = [
     "solnice", "vamberk", "častolovice", "doudleby nad orlicí", "albrechtice nad orlicí",
     "týniště nad orlicí", "borohrádek", "opočno", "dobruška",
 ]
+
+# Cílové obory (zákaznická podpora, back office, retail management, finance, veřejná správa, prodej, výroba):
+# regexy na kmeny profesí včetně podobných. Název s jedním zásahem projde; jinak musí detail zasáhnout aspoň
+# TARGET_MIN_DETAIL různých regexů. Detail nedostupný -> projde (nelze ověřit).
+# shortcut: slovník kmenů, ne sémantika; šum/chybějící profese doladit tady, až uvidíš první běhy.
+TARGET = [
+    r"zákaznick\w*\s+(podpor|péč|servis|služb|linka|centr|asistent|specialist|operátor)", r"technick\w*\s+podpor",
+    r"reklamac", r"operátor\w*\s+(příchoz|linky|call|zákaznick|infolinky)", r"infolinka|help\s?desk|service desk|call cent",
+    r"administrátor\w*\s+(podpor|objednáv|zakáz)", r"back\s?office", r"administrativ", r"referent",
+    r"fakturant|fakturac", r"koordinátor\w*\s+servis|servisní\s+koordinátor", r"sales support|asistent\w*\s+prodeje|obchodní asistent",
+    r"vedoucí\s+(prodejn|směny|úseku|pobočky|provozovny)|zástupce\s+vedoucí", r"store manager",
+    r"bankéř|bankovní\s+(poradc|úředn|pracovn)|klientsk\w*\s+(pracovn|servis|centr|poradc|specialist)",
+    r"přepážk|pošt[ay]\b|pojišťov", r"podatelna|podatelen|úředník|matrik|státní správ|úřad práce|OSSZ|finanční úřad",
+    r"prodejc|inside sales|telefonick\w*\s+prodej|prodej\w*\s+elektr", r"montáž|montážní|montážník|operátor\w*\s+výrob|kompletac",
+]
+TARGET_MIN_DETAIL = 3        # název bez zásahu: detail musí zasáhnout aspoň tolik různých regexů
+TARGET_MIN_DETAIL_TITLE = 2  # název se zásahem: detail ho musí potvrdit (jinak "Revizní technik | Technická podpora")
+TARGET_MIN_TEXT = 1000       # kratší detail = neověřitelný, nabídka projde
+TARGET_RE = [re.compile(x, re.I) for x in TARGET]
 
 # Řidičský průkaz jako podmínka: řádek detailu zmiňuje průkaz/oprávnění a není to "výhoda".
 LICENCE_RE = re.compile(r"řidičsk[ýé]\s+(průkaz|oprávnění)|řidičák", re.I)
@@ -183,6 +205,16 @@ def is_excluded(job: "Job") -> bool:
     if any(w in t for w in WHITELIST):
         return False
     return any(w in t for w in BLACKLIST)
+
+
+def is_relevant(job: "Job", text: str | None) -> bool:
+    """Pozici posuzuje název i detail (TARGET): zásah v názvu potřebuje potvrzení v detailu
+    (TARGET_MIN_DETAIL_TITLE), bez zásahu v názvu musí detail zasáhnout TARGET_MIN_DETAIL. Text None projde."""
+    if text is None or len(text) < TARGET_MIN_TEXT:  # prázdný/krátký detail (jobs.cz banky ~420 znaků) nelze posoudit
+        return True
+    hits = sum(1 for r in TARGET_RE if r.search(text))
+    in_title = any(r.search(job.title) for r in TARGET_RE)
+    return hits >= (TARGET_MIN_DETAIL_TITLE if in_title else TARGET_MIN_DETAIL)
 
 
 def needs_review(job: "Job") -> bool:
@@ -435,13 +467,16 @@ class Notion:
                 props = p["properties"]
                 text = lambda col: "".join(x.get("plain_text", "") for x in props.get(col, {}).get("title")
                                            or props.get(col, {}).get("rich_text") or [])
-                key = tuple(s.strip().lower() for s in (text(COL_TITLE), text(COL_COMPANY), text(COL_PLACE)))
+                key = _key(text(COL_TITLE), text(COL_COMPANY), text(COL_PLACE))
                 status = (props.get(COL_STATUS, {}).get("status") or {}).get("name", "")
                 rows.append({"id": p["id"], "url": props.get(COL_URL, {}).get("url") or "",
                              "key": key, "created": p.get("created_time", ""), "status": status})
             if not data.get("has_more"):
                 return rows
             cursor = data["next_cursor"]
+
+    def close(self):
+        self.c.close()
 
     def archive(self, page_id: str):
         """Přesune řádek do koše Notionu (lze obnovit)."""
@@ -495,18 +530,6 @@ def telegram_send(text: str) -> None:
                 raise RuntimeError(f"Telegram sendMessage selhal ({r.status_code}): {why}")
 
 
-def notify_telegram(jobs: list[Job]) -> bool:
-    """Pošle nové pozice; nic neposílá, když žádné nejsou nebo chybí tokeny. Vrací, zda poslal."""
-    if not jobs or not telegram_configured():
-        return False
-    esc = lambda s: html.escape(s, quote=False)  # Telegram parse_mode=HTML: jen &, <, > musí být escapované
-    lines = [f"<b>Nové pracovní nabídky: {len(jobs)}</b>", ""]  # první zpráva s počtem tučně
-    for j in jobs:
-        lines += [esc(j.title), f"{esc(j.company)} | {esc(j.place)}", esc(j.url), ""]
-    telegram_send("\n".join(lines))
-    return True
-
-
 def summary(res: dict, dry_run: bool = False) -> str:
     """Prostý text shrnutí běhu (CLI, MCP, Telegram). Pro Telegram escapovat (notify_done)."""
     g = lambda k: res.get(k, 0)
@@ -515,7 +538,7 @@ def summary(res: dict, dry_run: bool = False) -> str:
     first = f" (první: {res['first_write_error']})" if res.get("first_write_error") else ""
     return (f"Nových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
             f"vyřazeno (obor/lokalita): {g('excluded')}, (řidičský průkaz): {g('excluded_licence')}, "
-            f"(noční směny): {g('excluded_night')}, (VZV): {g('excluded_vzv')}, (prodej): {g('excluded_sales')}, "
+            f"(noční směny): {g('excluded_night')}, (VZV): {g('excluded_vzv')}, (prodej): {g('excluded_sales')}, (mimo cílové obory): {g('excluded_irrelevant')}, "
             f"ručně ověřit: {g('manual_check')}, detail neověřen: {g('licence_unchecked')}, "
             f"duplicit {'k archivaci' if dry_run else 'archivováno'}: {g('duplicates_archived')}, "
             f"chyby zápisu: {g('write_errors')}{first}\nPortály: {portals}")
@@ -527,16 +550,28 @@ def notify_done(res: dict) -> None:
 
 
 # ---------------------------------------------------------------- hlavní běh
+def _key(title: str, company: str, place: str) -> tuple:
+    """Klíč duplicity. Portál v něm schválně NENÍ: stejná pozice na dvou portálech je jeden řádek."""
+    return tuple(s.strip().lower() for s in (title, company, place))
+
+
 def _dedupable(key: tuple) -> bool:
-    """Klíč (název, firma, místo) bez firmy i místa nic neodlišuje (rozbitý selektor) -> podle něj se nededuplikuje."""
+    """Klíč bez firmy i místa nic neodlišuje (rozbitý selektor) -> podle něj se nededuplikuje."""
     return bool(key[1] or key[2])
 
 
+def _supersedes(old: dict | None, j: Job) -> bool:
+    """True, když inzerát j je novější verze pozice z řádku `old` (stav „Nový“, zapsaný před datem zveřejnění j).
+    Datum se porovnává, aby se stejná pozice na dvou portálech nepřepisovala při každém běhu dokola."""
+    return bool(old and old["status"] == STATUS_NEW and j.posted and old["created"][:10] < j.posted.isoformat())
+
+
 def split_duplicates(rows: list[dict]) -> tuple[dict, list[str]]:
-    """Řádky -> ({klíč: ponechaný řádek}, [ID duplicit k archivaci]). Nejstarší zůstává."""
+    """Řádky -> ({klíč: ponechaný řádek}, [ID duplicit k archivaci]). Nejnovější zůstává, starší se archivují."""
     keep, dups = {}, []
     # řádky s jiným stavem než "Nový" (uživatel s nimi pracoval) se nikdy nearchivují a mají přednost
-    for row in sorted(rows, key=lambda r: (r["status"] == STATUS_NEW, r["created"])):
+    newest_first = sorted(rows, key=lambda r: r["created"], reverse=True)
+    for row in sorted(newest_first, key=lambda r: r["status"] == STATUS_NEW):  # stabilní: rozpracované první, uvnitř nejnovější
         if not _dedupable(row["key"]):
             continue
         if row["key"] in keep:
@@ -579,7 +614,13 @@ def _run(keywords: list[str], dry_run: bool) -> dict:
     if not token or not db_id:
         raise SystemExit("Chybí NOTION_TOKEN nebo NOTION_DATABASE_ID v .env")
     notion = Notion(token, db_id)  # kontrola schématu i ve --dry-run (jen čtení)
+    try:
+        return _process(notion, keywords, dry_run)
+    finally:
+        notion.close()
 
+
+def _process(notion: Notion, keywords: list[str], dry_run: bool) -> dict:
     result = {"new": [], "skipped_existing": 0, "excluded": 0, "portals": {}}
     candidates: dict[str, Job] = {}
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
@@ -595,7 +636,7 @@ def _run(keywords: list[str], dry_run: bool) -> dict:
             except Exception as e:  # jedna chyba portálu nesmí shodit ostatní
                 result["portals"][name] = f"error: {type(e).__name__}: {e}"
 
-    # 1) existující řádky: duplicity (stejný název+firma+místo) se archivují, nejstarší zůstává
+    # 1) existující řádky: duplicity (stejný název+firma+místo, na portálu nezáleží) se archivují, nejnovější zůstává
     rows = notion.load_rows()
     keep, dups = split_duplicates(rows)
     result["duplicates_archived"] = 0
@@ -610,6 +651,7 @@ def _run(keywords: list[str], dry_run: bool) -> dict:
     result["excluded_night"] = 0
     result["excluded_vzv"] = 0
     result["excluded_sales"] = 0
+    result["excluded_irrelevant"] = 0
     result["manual_check"] = 0
     result["write_errors"] = 0
     result["first_write_error"] = ""
@@ -620,8 +662,9 @@ def _run(keywords: list[str], dry_run: bool) -> dict:
             if is_excluded(j) or not place_ok(j.place):
                 result["excluded"] += 1
                 continue
-            key = tuple(s.strip().lower() for s in (j.title, j.company, j.place))
-            if j.url in existing_urls or (_dedupable(key) and key in keep):
+            key = _key(j.title, j.company, j.place)
+            old = keep.get(key)  # řádek z Notionu; None = pozice se zapsala už v tomto běhu
+            if j.url in existing_urls or (_dedupable(key) and key in keep and not _supersedes(old, j)):
                 result["skipped_existing"] += 1
                 continue
             text = fetch_detail_text(client, j, robots_cache)
@@ -633,6 +676,9 @@ def _run(keywords: list[str], dry_run: bool) -> dict:
                 continue
             if text is not None and VZV_RE.search(text):
                 result["excluded_vzv"] += 1
+                continue
+            if not is_relevant(j, text):
+                result["excluded_irrelevant"] += 1
                 continue
             note = ""
             if needs_review(j):  # titul „prověřit“: rozhodnou signály v popisu; bez detailu -> ručně ověřit
@@ -654,6 +700,13 @@ def _run(keywords: list[str], dry_run: bool) -> dict:
                     result["first_write_error"] = result["first_write_error"] or (
                         str(e.response.status_code) if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
                     continue
+            if _supersedes(old, j) and _dedupable(key):  # novější inzerát zapsán -> starší řádek pryč (až po úspěšném zápisu)
+                try:
+                    if not dry_run:
+                        notion.archive(old["id"])
+                    result["duplicates_archived"] += 1
+                except httpx.HTTPError:
+                    result["write_errors"] += 1
             keep[key] = None  # stejná pozice se v tomto běhu nezapíše dvakrát
             result["new"].append(j)
     return result
