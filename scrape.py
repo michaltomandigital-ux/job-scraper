@@ -1,4 +1,4 @@
-"""Ruční CLI: py scrape.py "python" "analytik" [--dry-run] [--notify]"""
+"""CLI: py scrape.py [--dry-run] [--notify]  (podle profese.json)  nebo  py scrape.py "python" "analytik" [--dry-run] [--notify]"""
 import argparse
 
 import httpx
@@ -8,7 +8,7 @@ import core
 
 def main():
     ap = argparse.ArgumentParser(description="Hledá pracovní nabídky a ukládá je do Notionu.")
-    ap.add_argument("keywords", nargs="+", help="klíčová slova (hledá se každé zvlášť)")
+    ap.add_argument("keywords", nargs="*", help="klíčová slova (hledá se každé zvlášť); bez nich se hledá podle profese.json")
     ap.add_argument("--dry-run", action="store_true", help="nic nezapisovat, jen vypsat")
     ap.add_argument("--notify", action="store_true", help="po dokončení poslat do Telegramu oznámení se shrnutím")
     args = ap.parse_args()
@@ -16,13 +16,11 @@ def main():
     res = core.run(args.keywords, dry_run=args.dry_run)
     for name, state in res["portals"].items():
         print(f"[{name}] {state}")
-    verb = "by se uložilo" if args.dry_run else "uloženo"
-    print(f"\nNových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
-          f"vyřazeno (obor/lokalita): {res['excluded']}, vyřazeno (řidičský průkaz): {res['excluded_licence']}, vyřazeno (noční směny v detailu): {res['excluded_night']}, vyřazeno (VZV v detailu): {res['excluded_vzv']}, "
-          f"detail neověřen: {res['licence_unchecked']}, duplicit {'k archivaci' if args.dry_run else 'archivováno'}: "
-          f"{res['duplicates_archived']}, chyby zápisu: {res['write_errors']}")
+    print("\n" + core.summary(res, args.dry_run))
     for j in res["new"]:
-        print(f"- {j.title} | {j.company} | {j.place} | {j.url}")
+        print(f"- {j.title} | {j.company} | {j.place} | {j.url}" + (f" | {j.category}" if j.category else ""))
+    if args.dry_run:
+        print(f"\nDůvody vyřazení: {core.LOG_DIR / 'vyrazene_dryrun.csv'}")
 
     if args.notify:
         if args.dry_run:

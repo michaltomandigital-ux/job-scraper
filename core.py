@@ -2,12 +2,15 @@
 
 NIKDY neodesílá reakce na inzeráty. POST jde jen na api.notion.com a api.telegram.org.
 """
+import csv
 import html
+import json
 import os
 import re
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -30,6 +33,11 @@ COL_PORTAL = "Pracovní portál"
 COL_URL = "URL pozice"
 COL_STATUS = "Stav"
 STATUS_NEW = "Nový"
+# Volitelné sloupce (API je nevytvoří, přidej ručně): bez nich se příslušná hodnota prostě nezapíše.
+COL_CATEGORY = "Kategorie"  # select
+COL_SCORE = "Skóre"  # number
+COL_SOURCE = "Nalezeno z"  # select: "název" / "detail"
+OPTIONAL_COLS = {COL_CATEGORY: "select", COL_SCORE: "number", COL_SOURCE: "select"}
 
 ALLOWED_POST_HOSTS = {"api.notion.com", "api.telegram.org"}
 
@@ -60,26 +68,18 @@ JENPRACE_CZ = {
     "stop_heading": "Podívejte se i na jiné nabídky",  # za tímto nadpisem jsou jen doporučené nabídky
 }
 
-# Nesouvisející obory: nabídka, jejíž NÁZEV obsahuje některý z těchto výrazů (bez ohledu na velikost písmen),
-# se do Notionu neukládá. Ostatní se uloží a filtr relevance je na uživateli v Notionu.
-EXCLUDE_TITLE_WORDS = [
-    "recepční", "číšník", "číšnic", "servírk", "pokladní", "pokladník",
-    "uklízeč", "uklízečk",
-    "brigádník", "kuchař", "řidič", "zdravotní sestra", "pečovatel",
-    "lékař", "sestra", "sociální pracovn", "ošetřovatel", "zdravotnick", "fyzioterapeut",
-    "doktor", "mudr", "zubař", "zubní", "stomatolog", "sanitář", "zdravotní asistent",
-    # sociální služby a péče
-    "sociální služb", "sociálních služ", "sociální péče", "sociální poradce", "sociální asistent",
-    "pečující", "pečovat", "asistent péče", "pracovník v přímé péči", "pracovník přímé péče",
-    "domov pro", "domov seniorů", "domov důchodců", "chráněné bydlení",
-]
-# VZV (vysokozdvižný vozík): jakákoli zmínka v názvu nebo detailu nabídku vyřadí, i "VZV výhodou" a "bez nutnosti VZV".
+# Pravidla rozhodování (viz decide()):
+# - blacklist.txt: výrazy v NÁZVU, které nabídku vyřadí vždy; profese.json: whitelist oborů, synonyma, signály z detailu.
+# - Tvrdá pravidla (název i detail): jakákoli zmínka o řidičském oprávnění, VZV, noční směny, nepřetržitý a třísměnný provoz.
+#   Dvousměnný provoz je v pořádku.
+# VZV (vysokozdvižný vozík): jakákoli zmínka vyřadí, i "VZV výhodou" a "bez nutnosti VZV".
 VZV_RE = re.compile(r"\bVZV\b|vysokozdvižn", re.I)
-# Výslovně chtěné pozice: název s těmito výrazy se seznamem výše nevyřadí ("Prodavač/pokladní", "Skladník – řidič VZV").
-KEEP_TITLE_WORDS = ("skladn", "prodav")
-# Noční směny (název i detail): "nočn" jen na začátku slova, ať "vánoční" neprojde jako noční.
+# Noční směny: "nočn" jen na začátku slova, ať "vánoční" neprojde jako noční.
 NIGHT_RE = re.compile(r"\bnočn", re.I)
+# Zápor na STEJNÉM řádku ruší noční směnu / nepřetržitý / třísměnný provoz ("bez nočních", "není nepřetržitý provoz").
 NIGHT_NEG_RE = re.compile(r"\bbez\b|\bnení\b|\bnejsou\b|\bnebud|\bžádn|\bnemus|vyhn", re.I)
+NONSTOP_RE = re.compile(r"nepřetržit\w*\s+(provoz|směn)|\b24\s*/\s*7\b|non-?stop|provoz\w*\s+24\s*hod|24\s*hodin\w*\s+provoz", re.I)
+THREE_SHIFT_RE = re.compile(r"třísměnn|tří\s*směnn|\b3\s*směn|tři\s+směn|ve\s+třech\s+směnách", re.I)
 
 # Místo výkonu práce: nabídka se uloží, jen když místo obsahuje některý z těchto výrazů
 # (bez ohledu na velikost písmen; část města např. "Pardubice – Polabiny" projde). Prázdné místo projde.
@@ -90,9 +90,22 @@ PLACE_WORDS = [
     "týniště nad orlicí", "borohrádek", "opočno", "dobruška",
 ]
 
-# Řidičský průkaz jako podmínka: řádek detailu zmiňuje průkaz/oprávnění a není to "výhoda".
-LICENCE_RE = re.compile(r"řidičsk[ýé]\s+(průkaz|oprávnění)|řidičák", re.I)
-LICENCE_OPTIONAL_RE = re.compile(r"výhod|vítán|není podmínk|není nutn|nepovinn|\bplus\b", re.I)
+# Řidičské oprávnění: JAKÁKOLIV zmínka vyřadí nabídku (i "výhodou", "vítán", "není podmínkou").
+LICENCE_RE = re.compile(r"řidičsk\w*\s+(průkaz\w*|oprávnění)|řidičák|\bŘP\b|oprávnění\s+k\s+řízení", re.I)
+
+# Datové soubory a rozhodování
+ROOT = Path(__file__).parent
+PROFILES_FILE = ROOT / "profese.json"
+BLACKLIST_FILE = ROOT / "blacklist.txt"
+LOG_DIR = ROOT / "logs"  # v .gitignore
+MIN_SIGNALS = 2  # kolik RŮZNÝCH signálů v detailu stačí k nalezení pozice bez shody v názvu
+TITLE_SCORE = 10  # základ skóre při shodě v názvu
+REASON_LABELS = {
+    "lokalita": "lokalita", "blacklist": "blacklist", "ridicak": "řidičské oprávnění", "vzv": "VZV",
+    "noc": "noční směny", "nepretrzity": "nepřetržitý provoz", "trismenny": "třísměnný provoz",
+    "pravidlo": "pravidlo kategorie", "bez_shody": "bez shody s obory", "detail_nedostupny": "detail nedostupný",
+}
+TRANSIENT_REASONS = {"detail_nedostupny"}  # dočasné: nelogovat do skip-listu, příště se vyhodnotí znovu
 
 CZ_MONTHS = {
     "ledna": 1, "února": 2, "března": 3, "dubna": 4, "května": 5, "června": 6,
@@ -108,6 +121,9 @@ class Job:
     portal: str
     url: str
     posted: date | None = None
+    category: str = ""  # vyplní decide() přes run()
+    score: int = 0
+    source: str = ""  # "název" / "detail"
 
 
 class LayoutChanged(Exception):
@@ -143,16 +159,6 @@ def parse_cz_date(text: str, today: date | None = None) -> date | None:
     return None
 
 
-def is_excluded(job: "Job") -> bool:
-    """True, když název pozice patří do nesouvisejícího oboru (EXCLUDE_TITLE_WORDS)."""
-    t = job.title.lower()
-    if NIGHT_RE.search(t) and not NIGHT_NEG_RE.search(t) or VZV_RE.search(t):
-        return True
-    if any(w in t for w in KEEP_TITLE_WORDS):
-        return False
-    return any(w in t for w in EXCLUDE_TITLE_WORDS)
-
-
 def place_ok(place: str) -> bool:
     """True, když je místo výkonu práce v povolené lokalitě (PLACE_WORDS); prázdné místo projde."""
     p = place.lower().strip()
@@ -166,15 +172,114 @@ def _line_hit(text: str, pos: re.Pattern, neg: re.Pattern, look_next: bool = Fal
                for line, nxt in zip(lines, lines[1:] + [""]))
 
 
-def requires_driving_licence(text: str) -> bool:
-    """True, když text detailu požaduje řidičský průkaz (zmínka s 'výhodou'/'vítán' se nepočítá)."""
-    # "výhodou" bývá v samostatném tagu (<strong>) -> get_text("\n") ho přesune na další řádek
-    return _line_hit(text, LICENCE_RE, LICENCE_OPTIONAL_RE, look_next=True)
+@dataclass
+class Decision:
+    keep: bool
+    reason: str  # kód z REASON_LABELS, "ok" nebo "detail_neovereno"
+    category: str = ""
+    score: int = 0
+    source: str = ""  # "název" / "detail"
+    note: str = ""  # upřesnění důvodu (zasažený výraz blacklistu apod.)
 
 
-def has_night_shift(text: str) -> bool:
-    """True, když detail zmiňuje noční směny a na stejném řádku není zápor ('bez nočních')."""
-    return _line_hit(text, NIGHT_RE, NIGHT_NEG_RE)
+def hard_reason(text: str) -> str | None:
+    """Kód důvodu vyřazení podle tvrdých pravidel (název i detail), jinak None. Dvousměnný provoz projde."""
+    if LICENCE_RE.search(text):
+        return "ridicak"
+    if VZV_RE.search(text):
+        return "vzv"
+    if _line_hit(text, NIGHT_RE, NIGHT_NEG_RE):
+        return "noc"
+    if _line_hit(text, NONSTOP_RE, NIGHT_NEG_RE):
+        return "nepretrzity"
+    if _line_hit(text, THREE_SHIFT_RE, NIGHT_NEG_RE):
+        return "trismenny"
+    return None
+
+
+def load_profiles(path: Path = PROFILES_FILE) -> list[dict]:
+    """Kategorie z profese.json (pořadí = priorita) s předkompilovanými výrazy."""
+    comp = lambda items: [re.compile(p, re.I) for p in items]
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [{"nazev": c["nazev"], "search": c["search"], "title": comp(c["title"]),
+             "signaly": comp(c.get("signaly", [])),
+             "pravidla": [{"title": re.compile(r["title"], re.I), "vyradit": comp(r["vyradit_pokud_detail"])}
+                          for r in c.get("pravidla", [])]}
+            for c in data["kategorie"]]
+
+
+def load_blacklist(path: Path = BLACKLIST_FILE) -> list[str]:
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return [w.strip().lower() for w in lines if w.strip() and not w.lstrip().startswith("#")]
+
+
+def search_keywords(profiles: list[dict]) -> list[str]:
+    """Dotazy na portály ze všech kategorií (bez duplicit, v pořadí priority)."""
+    return list(dict.fromkeys(k for c in profiles for k in c["search"]))
+
+
+def _signal_hits(text: str, cat: dict) -> int:
+    return sum(1 for p in cat["signaly"] if p.search(text))
+
+
+def decide(job: "Job", fetch, profiles: list[dict] | None = None, blacklist=()) -> Decision:
+    """JEDINÉ místo, kde se rozhoduje o nabídce: zařadit/vyřadit + důvod.
+
+    `fetch()` vrací text detailu (nebo None = nelze ověřit); volá se nejvýš jednou a jen když je detail potřeba.
+    `profiles=None` = ruční hledání zadaných slov: bez whitelistu oborů, platí blacklist, lokalita a tvrdá pravidla.
+    """
+    title = job.title.lower()
+    if not place_ok(job.place):
+        return Decision(False, "lokalita")
+    hit = next((w for w in blacklist if w in title), None)
+    if hit:
+        return Decision(False, "blacklist", note=hit)
+    reason = hard_reason(job.title)
+    if reason:
+        return Decision(False, reason)
+    cat = next((c for c in profiles or [] if any(p.search(title) for p in c["title"])), None)
+    text = fetch()
+    if text is None:  # detail nešlo ověřit: shoda v názvu / ruční hledání se uloží (a počítá se), jinak nelze rozhodnout
+        if cat or not profiles:
+            return Decision(True, "detail_neovereno", cat["nazev"] if cat else "", TITLE_SCORE if cat else 0,
+                            "název" if cat else "")
+        return Decision(False, "detail_nedostupny")
+    reason = hard_reason(text)
+    if reason:
+        return Decision(False, reason)
+    if not profiles:
+        return Decision(True, "ok")
+    if cat:
+        for rule in cat["pravidla"]:
+            if rule["title"].search(title) and any(p.search(text) for p in rule["vyradit"]):
+                return Decision(False, "pravidlo", note=rule["title"].pattern)
+        return Decision(True, "ok", cat["nazev"], TITLE_SCORE + min(_signal_hits(text, cat), 5), "název")
+    hits, best = max(((_signal_hits(text, c), c) for c in profiles), key=lambda x: x[0])  # shoda -> vyšší priorita
+    if hits >= MIN_SIGNALS:
+        return Decision(True, "ok", best["nazev"], hits, "detail")
+    return Decision(False, "bez_shody")
+
+
+def load_recent_rejects(today: date | None = None) -> set[str]:
+    """URL nabídek vyřazených v posledních MAX_POSTED_DAYS dnech (logs/vyrazene.csv): nestahují se znovu."""
+    cutoff = ((today or date.today()) - timedelta(days=MAX_POSTED_DAYS)).isoformat()
+    try:
+        with open(LOG_DIR / "vyrazene.csv", encoding="utf-8-sig", newline="") as f:
+            return {row[2] for row in csv.reader(f, delimiter=";") if len(row) > 2 and row[0] >= cutoff}
+    except OSError:
+        return set()
+
+
+def write_reject_log(rows: list[list[str]], dry_run: bool) -> None:
+    """Ostrý běh přidává do logs/vyrazene.csv (skip-list + audit), --dry-run přepíše logs/vyrazene_dryrun.csv."""
+    LOG_DIR.mkdir(exist_ok=True)
+    path = LOG_DIR / ("vyrazene_dryrun.csv" if dry_run else "vyrazene.csv")
+    new_file = dry_run or not path.exists()
+    with open(path, "w" if dry_run else "a", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, delimiter=";")
+        if new_file:
+            w.writerow(["datum", "portál", "url", "název", "firma", "místo", "důvod", "upřesnění"])
+        w.writerows(rows)
 
 
 def fetch_detail_text(client: httpx.Client, job: "Job", robots_cache: dict) -> str | None:
@@ -340,6 +445,8 @@ def _send(client: httpx.Client, method: str, url: str, **kw) -> httpx.Response:
 
 
 class Notion:
+    optional: frozenset = frozenset()  # volitelné sloupce, které v databázi opravdu jsou (OPTIONAL_COLS)
+
     def __init__(self, token: str, database_id: str):
         self.c = httpx.Client(
             base_url="https://api.notion.com/v1",
@@ -357,7 +464,9 @@ class Notion:
         ds = self.c.get(f"/data_sources/{self.ds_id}")
         if ds.status_code != 200:
             raise SystemExit(f"Notion: data source nelze načíst ({ds.status_code}), ověř sdílení integrace")
-        self._check_schema(ds.json().get("properties", {}))
+        props = ds.json().get("properties", {})
+        self._check_schema(props)
+        self.optional = frozenset(c for c, t in OPTIONAL_COLS.items() if props.get(c, {}).get("type") == t)
 
     @staticmethod
     def _check_schema(props: dict):
@@ -408,6 +517,10 @@ class Notion:
                 COL_URL: {"url": j.url},
                 COL_STATUS: {"status": {"name": STATUS_NEW}},
             }}
+        if j.category:
+            extra = {COL_CATEGORY: {"select": {"name": j.category}}, COL_SCORE: {"number": j.score},
+                     COL_SOURCE: {"select": {"name": j.source}}}
+            body["properties"].update({k: v for k, v in extra.items() if k in self.optional})
         r = _send(self.c, "POST", "https://api.notion.com/v1/pages", json=body)
         r.raise_for_status()
 
@@ -458,9 +571,17 @@ def summary(res: dict, dry_run: bool = False) -> str:
     g = lambda k: res.get(k, 0)
     verb = "by se uložilo" if dry_run else "uloženo"
     portals = "; ".join(f"{n}: {s}" for n, s in res["portals"].items())
-    return (f"Nových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
-            f"vyřazeno filtry: {g('excluded') + g('excluded_licence') + g('excluded_night') + g('excluded_vzv')}, "
-            f"chyby zápisu: {g('write_errors')}\nPortály: {portals}")
+    exc = res.get("excluded") or {}
+    why = ", ".join(f"{REASON_LABELS.get(k, k)} {v}" for k, v in sorted(exc.items(), key=lambda kv: -kv[1]))
+    out = (f"Nových nabídek ({verb}): {len(res['new'])}, už existuje: {res['skipped_existing']}, "
+           f"vyřazeno: {sum(exc.values())}" + (f" ({why})" if why else "") + f", chyby zápisu: {g('write_errors')}")
+    if g("from_detail"):
+        out += f"\nZ nových nalezeno z detailu (bez shody v názvu): {g('from_detail')}"
+    if g("skipped_rejected"):
+        out += f"\nPřeskočeno (nedávno vyřazeno): {g('skipped_rejected')}"
+    if res.get("missing_columns"):
+        out += f"\nV Notionu chybí sloupce (nezapsáno): {', '.join(res['missing_columns'])}"
+    return out + f"\nPortály: {portals}"
 
 
 def notify_done(res: dict) -> None:
@@ -482,15 +603,24 @@ def split_duplicates(rows: list[dict]) -> tuple[dict, list[str]]:
     return keep, dups
 
 
-def run(keywords: list[str], dry_run: bool = False) -> dict:
-    """Vrací {'new': [Job], 'skipped_existing': int, 'portals': {name: stav}}."""
+def run(keywords: list[str] | None, dry_run: bool = False) -> dict:
+    """Vrací {'new': [Job], 'skipped_existing': int, 'excluded': {důvod: počet}, 'portals': {name: stav}, ...}.
+
+    Bez klíčových slov se hledá podle profese.json (whitelist oborů, signály z detailu); se zadanými slovy
+    se hledá jen podle nich a whitelist se neuplatní (blacklist, lokalita a tvrdá pravidla platí vždy).
+    """
     load_dotenv()
     token, db_id = os.getenv("NOTION_TOKEN"), os.getenv("NOTION_DATABASE_ID")
     if not token or not db_id:
         raise SystemExit("Chybí NOTION_TOKEN nebo NOTION_DATABASE_ID v .env")
     notion = Notion(token, db_id)  # kontrola schématu i ve --dry-run (jen čtení)
+    profiles = None if keywords else load_profiles()
+    keywords = keywords or search_keywords(profiles)
+    blacklist = load_blacklist()
 
-    result = {"new": [], "skipped_existing": 0, "excluded": 0, "portals": {}}
+    result = {"new": [], "skipped_existing": 0, "skipped_rejected": 0, "excluded": {}, "from_detail": 0,
+              "missing_columns": [c for c in OPTIONAL_COLS if c not in getattr(notion, "optional", OPTIONAL_COLS)],
+              "portals": {}}
     candidates: dict[str, Job] = {}
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
         for name in PORTALS:
@@ -515,40 +645,42 @@ def run(keywords: list[str], dry_run: bool = False) -> dict:
         result["duplicates_archived"] += 1
     existing_urls = {row["url"] for row in rows}
 
-    # 2) nové kandidáty: obor + lokalita, duplicity, nakonec řidičský průkaz z detailu (GET, jen u zbylých)
-    result["excluded_licence"] = 0
-    result["excluded_night"] = 0
-    result["excluded_vzv"] = 0
+    # 2) nové kandidáty: o každém rozhoduje jediná funkce decide() (detail se stahuje jen když je potřeba)
     result["write_errors"] = 0
-    result["licence_unchecked"] = 0
+    result["detail_unchecked"] = 0
+    # --dry-run vyhodnotí vše znovu (ladění pravidel); ostrý běh přeskočí nedávno vyřazené (nestahuje detail znovu)
+    recent_rejects = set() if dry_run else load_recent_rejects()
+    reject_rows: list[list[str]] = []
     robots_cache: dict = {}
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
         for j in candidates.values():
-            if is_excluded(j) or not place_ok(j.place):
-                result["excluded"] += 1
-                continue
             key = tuple(s.strip().lower() for s in (j.title, j.company, j.place))
             if j.url in existing_urls or key in keep:
                 result["skipped_existing"] += 1
                 continue
-            text = fetch_detail_text(client, j, robots_cache)
-            if text is not None and requires_driving_licence(text):
-                result["excluded_licence"] += 1
+            if j.url in recent_rejects:
+                result["skipped_rejected"] += 1
                 continue
-            if text is not None and has_night_shift(text):
-                result["excluded_night"] += 1
+            d = decide(j, lambda: fetch_detail_text(client, j, robots_cache), profiles, blacklist)
+            if not d.keep:
+                result["excluded"][d.reason] = result["excluded"].get(d.reason, 0) + 1
+                if d.reason not in TRANSIENT_REASONS:
+                    reject_rows.append([date.today().isoformat(), j.portal, j.url, j.title, j.company, j.place,
+                                        REASON_LABELS.get(d.reason, d.reason), d.note])
                 continue
-            if text is not None and VZV_RE.search(text):
-                result["excluded_vzv"] += 1
-                continue
-            if text is None:  # detail nešlo ověřit -> nabídka se uloží, ale počítá se
-                result["licence_unchecked"] += 1
+            if d.reason == "detail_neovereno":  # detail nešlo ověřit -> nabídka se uloží, ale počítá se
+                result["detail_unchecked"] += 1
+            j.category, j.score, j.source = d.category, d.score, d.source
             if not dry_run:
                 try:
                     notion.create(j)
                 except httpx.HTTPError:  # už zapsané nabídky se musí dostat do výsledku (a Telegramu)
                     result["write_errors"] += 1
                     continue
+            if d.source == "detail":
+                result["from_detail"] += 1
             keep[key] = None  # stejná pozice se v tomto běhu nezapíše dvakrát
             result["new"].append(j)
+    if reject_rows or dry_run:
+        write_reject_log(reject_rows, dry_run)
     return result

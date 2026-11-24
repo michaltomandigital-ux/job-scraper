@@ -1,0 +1,42 @@
+# Blacklist: nabídka, jejíž NÁZEV obsahuje některý z těchto výrazů (malá písmena, bez ohledu na velikost), se nikdy neuloží.
+# Platí vždy, bez výjimek (i pro pozice nalezené z detailu). Jeden výraz na řádek, řádky s # se ignorují.
+# Úmyslně tu NENÍ "pokladní": "Prodavač/pokladní" se má ukládat; čistá "Pokladní" projde blacklistem, ale nemá shodu v profese.json.
+recepční
+číšník
+číšnic
+servírk
+uklízeč
+uklízečk
+brigádník
+kuchař
+řidič
+zdravotní sestra
+pečovatel
+lékař
+sestra
+sociální pracovn
+ošetřovatel
+zdravotnick
+fyzioterapeut
+doktor
+mudr
+zubař
+zubní
+stomatolog
+sanitář
+zdravotní asistent
+# sociální služby a péče
+sociální služb
+sociálních služ
+sociální péče
+sociální poradce
+sociální asistent
+pečující
+pečovat
+asistent péče
+pracovník v přímé péči
+pracovník přímé péče
+domov pro
+domov seniorů
+domov důchodců
+chráněné bydlení
