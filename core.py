@@ -83,6 +83,7 @@ VZV_RE = re.compile(r"\bVZV\b|vysokozdvižn", re.I)
 NIGHT_RE = re.compile(r"\bnočn", re.I)
 # Zápor na STEJNÉM řádku ruší noční směnu / nepřetržitý / třísměnný provoz ("bez nočních", "není nepřetržitý provoz").
 NIGHT_NEG_RE = re.compile(r"\bbez\b|\bnení\b|\bnejsou\b|\bnebud|\bžádn|\bnemus|vyhn", re.I)
+LICENCE_OK_RE = re.compile(r"výhod|vítán|není\s+(podmínk|nutn|nezbytn|vyžadov)|nepožadujeme|nemusíte", re.I)
 NONSTOP_RE = re.compile(r"nepřetržit\w*\s+(provoz|směn)|\b24\s*/\s*7\b|non-?stop|provoz\w*\s+24\s*hod|24\s*hodin\w*\s+provoz", re.I)
 THREE_SHIFT_RE = re.compile(r"třísměnn|tří\s*směnn|\b3\s*směn|tři\s+směn|ve\s+třech\s+směnách", re.I)
 # Řidičské oprávnění: JAKÁKOLIV zmínka vyřadí nabídku (i "výhodou", "vítán", "není podmínkou").
@@ -189,18 +190,41 @@ class Decision:
     note: str = ""  # upřesnění důvodu (zasažený výraz blacklistu apod.)
 
 
+def _licence_hit(text: str) -> str | None:
+    """Úryvek s řidičským oprávněním jako POŽADAVKEM, jinak None. Zmínka s „výhodou/vítán/není podmínkou“ v téže větě
+    (nebo pod nadpisem „Výhodou:“) se nepočítá."""
+    text = re.sub(r"\bsk\.", "sk", text, flags=re.I)  # „sk. B“ nesmí rozdělit větu
+    delims = "\n.!?;•|"
+    for m in LICENCE_RE.finditer(text):
+        start = max(text.rfind(ch, 0, m.start()) for ch in delims) + 1
+        ends = [i for i in (text.find(ch, m.end()) for ch in delims) if i != -1]
+        segment = text[start:min(ends) if ends else len(text)]
+        if LICENCE_OK_RE.search(segment):
+            continue
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        header_ok = False
+        for prev in reversed(text[:line_start].split("\n")[-8:]):  # nejbližší nadpis končící „:“
+            prev = prev.strip()
+            if prev.endswith(":"):
+                header_ok = bool(LICENCE_OK_RE.search(prev))
+                break
+        if header_ok:
+            continue
+        return text[max(0, m.start() - 50):m.start() + 70].replace("\n", " ").strip()
+    return None
+
+
 def hard_hit(text: str) -> tuple[str, str] | None:
     """(kód důvodu, zasažený úryvek) podle tvrdých pravidel (název i detail), jinak None. Dvousměnný provoz projde."""
-    for code, pos, neg in (("ridicak", LICENCE_RE, None), ("vzv", VZV_RE, None), ("noc", NIGHT_RE, NIGHT_NEG_RE),
-                           ("nepretrzity", NONSTOP_RE, NIGHT_NEG_RE), ("trismenny", THREE_SHIFT_RE, NIGHT_NEG_RE)):
-        if neg is None:
-            m = pos.search(text)
-            if m:
-                return code, text[max(0, m.start() - 50):m.start() + 70].replace("\n", " ").strip()
-        else:
-            snippet = _line_hit(text, pos, neg)
-            if snippet:
-                return code, snippet
+    snippet = _licence_hit(text)
+    if snippet:
+        return "ridicak", snippet
+    if (m := VZV_RE.search(text)):
+        return "vzv", text[max(0, m.start() - 50):m.start() + 70].replace("\n", " ").strip()
+    for code, pos in (("noc", NIGHT_RE), ("nepretrzity", NONSTOP_RE), ("trismenny", THREE_SHIFT_RE)):
+        snippet = _line_hit(text, pos, NIGHT_NEG_RE)
+        if snippet:
+            return code, snippet
     return None
 
 

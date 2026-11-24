@@ -9,14 +9,17 @@
         "technická podpora",
         "reklamace",
         "operátor infolinky",
-        "administrátor podpory"
+        "administrátor podpory",
+        "IT podpora"
       ],
       "title": [
         "zákaznick",
         "technick\\w* (podpor\\w*|support)\\b(?! (projekt|realizac))|technical support|customer support|helpdesk|help desk|service desk",
         "reklamac",
         "infolin|call ?cent|operátor\\w* (příchoz|linky)",
-        "administrátor\\w* podpor"
+        "administrátor\\w* podpor",
+        "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bIT\\s+(podpor\\w*|support|helpdesk|service desk))",
+        "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bl[12]\\b)(?=.*(podpor|support|helpdesk|service desk))"
       ],
       "pravidla": [
         {
@@ -47,7 +50,9 @@
         "sales support",
         "administrativní pracovník",
         "back office",
-        "fakturant"
+        "fakturant",
+        "asistent nákupčího",
+        "project administrator"
       ],
       "title": [
         "administrátor\\w* objednáv|zpracování objednáv",
@@ -55,7 +60,8 @@
         "asistent\\w* prodeje|sales support|podpor\\w* prodeje",
         "administrativn",
         "back ?-?office",
-        "fakturant"
+        "fakturant",
+        "asistent\\w* nákupč\\w*|project administrator|projektov\\w+ administrátor"
       ],
       "pravidla": [
         {

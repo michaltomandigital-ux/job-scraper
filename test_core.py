@@ -529,12 +529,18 @@ def test_decide_title_rules_without_profiles():
     assert why("Kuchař / kuchařka") == "blacklist"
 
 
-def test_hard_reason_driving_licence_any_mention():
+def test_hard_reason_driving_licence_only_as_requirement():
     h = core.hard_reason
     assert h("Něco\nŘidičský průkaz B\nDalší") == "ridicak"
     assert h("Řidičské oprávnění sk. B (aktivní řidič)") == "ridicak"
-    assert h("Výhodou vám bude řidičský průkaz sk. B") == "ridicak"  # i "výhodou"
-    assert h("Řidičský průkaz skupiny B - vítán") == "ridicak"
+    assert h("Výhodou vám bude řidičský průkaz sk. B") is None  # od 24. 11. „výhodou“ projde
+    assert h("Řidičský průkaz skupiny B - vítán") is None
+    assert h("Řidičský průkaz sk. B není podmínkou") is None
+    assert h("Výhody:\n- řidičský průkaz\n- angličtina") is None  # pod nadpisem „Výhody:“
+    assert h("Požadujeme:\n- řidičský průkaz skupiny B") == "ridicak"
+    assert h("Řidičský průkaz sk. B je nutností. Výhodou je angličtina.") == "ridicak"  # výhodou v jiné větě
+    assert h("Výhodou je angličtina. Řidičský průkaz skupiny B je podmínkou.") == "ridicak"
+    assert h("Výhodou: znalost AJ\nPožadujeme:\n- řidičský průkaz") == "ridicak"  # nejbližší nadpis je „Požadujeme:“
     assert h("Požadujeme řidičského průkazu skupiny B") == "ridicak"  # skloňování (dřív neodchyceno)
     assert h("Máte řidičák? Super") == "ridicak"
     assert h("Platné ŘP skupiny B") == "ridicak"
@@ -601,6 +607,8 @@ def test_whitelist_title_match_gives_category_and_priority():
         "Zástupce vedoucího prodejny": "3", "Vedoucí prodejny": "3", "Vedoucí směny / úseku": "3",
         "Prodejce elektroniky": "4", "Prodejce u operátora O2": "4", "Inside sales manager": "4",
         "Skladník": "5", "Montážní pracovník": "5",
+        "Specialista IT podpory": "1", "IT helpdesk L1": "1", "L1/L2 support": "1",
+        "Asistent nákupčího": "2", "Project Administrator": "2", "Projektový administrátor": "2",
     }
     for title, num in cases.items():
         r = d(title)
@@ -640,7 +648,8 @@ def test_category_5_is_never_found_from_detail():
 
 def test_hard_rules_apply_to_title_matches_in_detail():
     d = lambda text: _decide("Specialista zákaznické péče", text, profiles=PROFILES)
-    assert d("Výhodou řidičský průkaz skupiny B").reason == "ridicak"
+    assert d("Výhodou řidičský průkaz skupiny B").keep  # „výhodou“ projde
+    assert d("Požadujeme řidičský průkaz skupiny B").reason == "ridicak"
     assert d("Noční směny").reason == "noc"
     assert d("Nepřetržitý provoz").reason == "nepretrzity"
     assert d("Třísměnný provoz").reason == "trismenny"
@@ -715,7 +724,7 @@ def _jobs():
 def test_profile_run_uses_profile_keywords_and_whitelist(monkeypatch, tmp_path):
     detail_profiles = _profiles_with_detail_discovery(tmp_path)
     monkeypatch.setattr(core, "load_profiles", lambda *a: detail_profiles)
-    details = {"https://www.jobs.cz/rpd/3/": "Řidičský průkaz výhodou",
+    details = {"https://www.jobs.cz/rpd/3/": "Požadujeme řidičský průkaz skupiny B",
                "https://www.jobs.cz/rpd/4/": "příchozí hovory, helpdesk a reklamace zákazníků"}
     n, searched = _FakeNotion(), []
     res = _run_profiles(monkeypatch, _jobs(), details, n, searched=searched)  # bez klíčových slov = profily
@@ -812,3 +821,12 @@ def test_noise_regressions_from_first_full_dry_run():
     assert not d("Prodavač / prodavačka", "Prodej pečiva").keep
     assert d("Specialista technické podpory zákazníků", "Příchozí hovory, helpdesk").keep
     assert d("Prodavač/ka - vedoucí směny", "Řízení směny").keep
+
+
+def test_it_support_only_l1_l2_not_expert():
+    d = lambda title: _decide(title, "Běžná náplň práce", profiles=PROFILES)
+    for title in ("Specialista IT podpory", "IT helpdesk L1", "Technik IT support L2", "L1 podpora uživatelů"):
+        assert d(title).category == CAT["1"], title
+    for title in ("Senior IT support specialist", "IT podpora L3 expert", "Vedoucí IT podpory", "IT architekt"):
+        r = d(title)
+        assert not r.keep or r.category != CAT["1"], (title, r)
