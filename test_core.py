@@ -1,4 +1,5 @@
 """Offline testy (bez sítě): parsery na HTML fixturách + hlídání POST požadavků."""
+import json
 import re
 from datetime import date
 from pathlib import Path
@@ -566,6 +567,17 @@ def test_hard_reason_shifts():
 
 # ---------------------------------------------------------------- profese.json, whitelist, detail
 PROFILES = core.load_profiles()
+
+
+def _profiles_with_detail_discovery(tmp_dir):
+    """Profily se zapnutými signály (v profese.json jsou přejmenované na `signaly_vypnuto`)."""
+    data = json.loads(core.PROFILES_FILE.read_text(encoding="utf-8"))
+    for c in data["kategorie"]:
+        if "signaly_vypnuto" in c:
+            c["signaly"] = c.pop("signaly_vypnuto")
+    path = tmp_dir / "profese_detail.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return core.load_profiles(path)
 CAT = {c["nazev"].split()[0]: c["nazev"] for c in PROFILES}  # "1" -> "1 Zákaznická podpora"
 
 
@@ -601,7 +613,16 @@ def test_no_title_match_and_no_signals_is_rejected():
     assert not r.keep and r.reason == "bez_shody"
 
 
-def test_detail_discovery_needs_two_different_signals():
+def test_detail_discovery_is_off_in_shipped_profiles():
+    """Nálezy z detailu daly v dry-runech jen šum (Foxconn, SERVISBAL), signály jsou vypnuté."""
+    text = "Čeká vás práce s příchozími hovory a řešení reklamací zákazníků. Nabízíme benefity."
+    r = _decide("Referent obsluhy klientů", text, profiles=PROFILES)
+    assert not r.keep and r.reason == "bez_shody"
+    assert not any(c["signaly"] for c in PROFILES)
+
+
+def test_detail_discovery_needs_two_different_signals(tmp_path):
+    PROFILES = _profiles_with_detail_discovery(tmp_path)
     text = "Čeká vás práce s příchozími hovory a řešení reklamací zákazníků. Nabízíme benefity."
     r = _decide("Referent obsluhy klientů", text, profiles=PROFILES)
     assert r.keep and r.source == "detail" and r.category == CAT["1"] and r.score >= 2
@@ -691,7 +712,9 @@ def _jobs():
             mk(4, "Referent klientů")]
 
 
-def test_profile_run_uses_profile_keywords_and_whitelist(monkeypatch):
+def test_profile_run_uses_profile_keywords_and_whitelist(monkeypatch, tmp_path):
+    detail_profiles = _profiles_with_detail_discovery(tmp_path)
+    monkeypatch.setattr(core, "load_profiles", lambda *a: detail_profiles)
     details = {"https://www.jobs.cz/rpd/3/": "Řidičský průkaz výhodou",
                "https://www.jobs.cz/rpd/4/": "příchozí hovory, helpdesk a reklamace zákazníků"}
     n, searched = _FakeNotion(), []

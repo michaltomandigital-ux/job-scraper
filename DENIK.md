@@ -24,6 +24,7 @@ Zadání a pravidla jsou v `CLAUDE.md`. Tady je historie a to, co se ověřilo n
 - Zámek `.run.lock` starší než hodina se ignoruje (po spadlém běhu).
 
 ## Evidence změn slovníku (nejnovější nahoře)
+- 2026-11-24: nálezy z detailu VYPNUTY (`signaly` → `signaly_vypnuto` v kat. 1–4). Důvod: dry-run 2 a 3 (po zúžení) znovu 4 z 4 šum (SERVISBAL, Foxconn ×3), 0 užitečných. Bez diagnostiky (která signály zasáhly) se ladí naslepo. Zapnutí: přejmenovat klíč zpět; testy mají pomocníka `_profiles_with_detail_discovery`.
 - 2026-11-24: `profese.json` po prvním plném dry-runu (šum: Foxconn, SERVISBAL, Manuvia, 5× prodavač, revizní technik): kat. 4 −`prodavač` (není v zadání), signály kat. 4 −`elektronik`, `tarif` jen jako slovo; kat. 1 title „technická podpora“ ne před „projekt/realizac“. Detail zůstává zapnutý (MIN_SIGNALS=2), ověřit dalším během.
 - 2026-11-24: `blacklist.txt` = sloučené `BLACKLIST` + `BLACKLIST_HARD` beze změny obsahu (+ viz výše).
 - 2026-11-20: `BLACKLIST` +zámečník, svářeč, autoklempíř, instalatér, topenář, montér, elektromontáž, plynovod, realit, makléř, investiční specialist, systémový inženýr, informačních systémů (šum z ostrého běhu; na pokyn uživatele). Už zapsané řádky v Notionu zůstávají.
@@ -31,6 +32,7 @@ Zadání a pravidla jsou v `CLAUDE.md`. Tady je historie a to, co se ověřilo n
 - 2026-11-19: přejmenování seznamů na `BLACKLIST` / `BLACKLIST_HARD` / `WHITELIST`, obsah beze změny.
 
 ## Běhy
+- 2026-11-24 (dry-run 3, po zúžení šumu, commit d3f2c85): 899 kandidátů, 14 nových, 152 existovalo, 733 vyřazeno (lokalita 566, bez shody 57, řidičák 56, blacklist 27, VZV 11, noc 10, nepřetržitý 5, pravidlo 1). Z detailu 4 (všechny šum). Pozn.: dry-run 2 běžel na staré verzi (spuštěn před git pull).
 - 2026-11-24 (první plný dry-run podle profesí, před úpravou signálů): 898 kandidátů (jobs.cz 550, jenprace.cz 348), 21 nových, 154 už existovalo, 723 vyřazeno (lokalita 565, řidičák 54, bez shody 50, blacklist 27, VZV 11, noc 10, nepřetržitý 5, pravidlo 1). Nálezy z detailu: 5, všech 5 šum.
 - 2026-11-06 (první): 289 nově zapsaných, 1195 už existovalo.
 - 2026-11-06 (s archivací duplicit): 5 nově zapsaných, 1448 už existovalo, 35 vyřazeno filtrem oborů, 17 duplicit archivováno.

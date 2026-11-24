@@ -18,16 +18,6 @@
         "infolin|call ?cent|operátor\\w* (příchoz|linky)",
         "administrátor\\w* podpor"
       ],
-      "signaly": [
-        "příchoz\\w+ (hovor|telefon|volán|linek)",
-        "infolin",
-        "zákaznick\\w+ (linka|linky|linku|podpor|péč|servis|centr)",
-        "reklamac",
-        "helpdesk|help desk|service desk",
-        "technick\\w+ (podpor|support)",
-        "\\bl[12]\\b",
-        "(dotaz|požadavk|stížnost)\\w* zákazník"
-      ],
       "pravidla": [
         {
           "title": "call ?cent|infolin|operátor",
@@ -37,6 +27,16 @@
             "odchozí\\s+hovor"
           ]
         }
+      ],
+      "signaly_vypnuto": [
+        "příchoz\\w+ (hovor|telefon|volán|linek)",
+        "infolin",
+        "zákaznick\\w+ (linka|linky|linku|podpor|péč|servis|centr)",
+        "reklamac",
+        "helpdesk|help desk|service desk",
+        "technick\\w+ (podpor|support)",
+        "\\bl[12]\\b",
+        "(dotaz|požadavk|stížnost)\\w* zákazník"
       ]
     },
     {
@@ -57,15 +57,6 @@
         "back ?-?office",
         "fakturant"
       ],
-      "signaly": [
-        "objednáv",
-        "back ?-?office",
-        "fakturac|fakturov",
-        "administrativn\\w+ (činnost|agend|podpor)",
-        "sales support|podpora prodeje|asistent\\w* prodeje",
-        "koordinac\\w* (servis|zakáz|technik)",
-        "evidenc\\w+ (zakáz|objednáv|dokument)"
-      ],
       "pravidla": [
         {
           "title": "fakturant",
@@ -76,6 +67,15 @@
             "zpracování mezd|mzdov\\w+ (agend|účetn)"
           ]
         }
+      ],
+      "signaly_vypnuto": [
+        "objednáv",
+        "back ?-?office",
+        "fakturac|fakturov",
+        "administrativn\\w+ (činnost|agend|podpor)",
+        "sales support|podpora prodeje|asistent\\w* prodeje",
+        "koordinac\\w* (servis|zakáz|technik)",
+        "evidenc\\w+ (zakáz|objednáv|dokument)"
       ]
     },
     {
@@ -89,7 +89,7 @@
         "zástupc\\w* vedoucí",
         "vedouc\\w+ (prodejn|směn|úsek)"
       ],
-      "signaly": [
+      "signaly_vypnuto": [
         "(řízení|vedení) (prodejn|týmu|kolektivu|směn|provozovn)",
         "inventur",
         "objednáv\\w+ zboží|zásobování prodejn",
@@ -112,13 +112,6 @@
         "inside ?sales",
         "telefonick\\w+ prodej|telefonní prodej"
       ],
-      "signaly": [
-        "\\btarif(y|ů|em|u)?\\b|mobiln\\w+ (telefon|služb)",
-        "\\bo2\\b|t-mobile|vodafone",
-        "telefonick\\w+ (prodej|obchod)",
-        "inside ?sales",
-        "péče o (stávající|současn)\\w* (klient|zákazník)"
-      ],
       "pravidla": [
         {
           "title": "prodejc|inside ?sales|telefonick\\w+ prodej|telefonní prodej",
@@ -128,6 +121,13 @@
             "odchozí\\s+hovor"
           ]
         }
+      ],
+      "signaly_vypnuto": [
+        "\\btarif(y|ů|em|u)?\\b|mobiln\\w+ (telefon|služb)",
+        "\\bo2\\b|t-mobile|vodafone",
+        "telefonick\\w+ (prodej|obchod)",
+        "inside ?sales",
+        "péče o (stávající|současn)\\w* (klient|zákazník)"
       ]
     },
     {
