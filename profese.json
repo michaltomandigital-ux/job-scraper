@@ -10,7 +10,10 @@
         "reklamace",
         "operátor infolinky",
         "administrátor podpory",
-        "IT podpora"
+        "IT podpora",
+        "customer service",
+        "klientský servis",
+        "infocentrum"
       ],
       "title": [
         "zákaznick",
@@ -19,7 +22,10 @@
         "infolin|call ?cent|operátor\\w* (příchoz|linky)",
         "administrátor\\w* podpor",
         "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bIT\\s+(podpor\\w*|support|helpdesk|service desk))",
-        "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bl[12]\\b)(?=.*(podpor|support|helpdesk|service desk))"
+        "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bl[12]\\b)(?=.*(podpor|support|helpdesk|service desk))",
+        "customer (care|service)",
+        "klientsk\\w+ (servis|podpor)",
+        "infocentr"
       ],
       "pravidla": [
         {
@@ -52,7 +58,8 @@
         "back office",
         "fakturant",
         "asistent nákupčího",
-        "project administrator"
+        "project administrator",
+        "sekretářka"
       ],
       "title": [
         "administrátor\\w* objednáv|zpracování objednáv",
@@ -61,7 +68,9 @@
         "administrativn",
         "back ?-?office",
         "fakturant",
-        "asistent\\w* nákupč\\w*|project administrator|projektov\\w+ administrátor"
+        "asistent\\w* nákupč\\w*|project administrator|projektov\\w+ administrátor",
+        "sekretář",
+        "metodick\\w+ podpor\\w*.*fakturac"
       ],
       "pravidla": [
         {
@@ -110,13 +119,15 @@
         "prodejce operátor",
         "inside sales",
         "telefonický prodej",
-        "prodavač"
+        "prodavač",
+        "prodejce mobilních telefonů"
       ],
       "title": [
         "prodejc(?=.*(operátor|\\bo2\\b|t-mobile|vodafone))",
         "prodej\\w* elektron",
         "inside ?sales",
-        "telefonick\\w+ prodej|telefonní prodej"
+        "telefonick\\w+ prodej|telefonní prodej",
+        "prodejc\\w*[^|]{0,25}(mobiln|\\bict\\b)"
       ],
       "pravidla": [
         {

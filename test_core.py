@@ -140,6 +140,7 @@ def test_place_ok():
     assert core.place_ok("Slezské Předměstí, Hradec Králové")
     assert core.place_ok("Rychnov nad Kněžnou")
     assert core.place_ok("")  # prázdné místo se nevyřazuje
+    assert core.place_ok("Holice") and core.place_ok("Býšť") and core.place_ok("Svítkov, Pardubice")  # 24. 11. okolí Pardubic
     for out in ("Lázně Bohdaneč", "Chrudim", "Havlíčkův Brod", "Kolín", "Středočeský kraj", "Celá ČR"):
         assert not core.place_ok(out)
 
@@ -564,7 +565,7 @@ def test_hard_reason_shifts():
     assert h("Dvousměnný provoz, pondělí až pátek") is None  # dvousměnný je v pořádku
     assert h("Práce v nepřetržitém provozu") == "nepretrzity"
     assert h("Nepřetržitý provoz 24/7") == "nepretrzity"
-    assert h("Služba non-stop") == "nepretrzity"
+    assert h("Non-stop provoz") == "nepretrzity"  # holé „non-stop“ bez provozu/směn už nestačí
     assert h("Pracujeme bez nepřetržitého provozu") is None
     assert h("Třísměnný provoz") == "trismenny"
     assert h("Práce na 3 směny") == "trismenny"
@@ -608,6 +609,9 @@ def test_whitelist_title_match_gives_category_and_priority():
         "Prodejce elektroniky": "4", "Prodejce u operátora O2": "4", "Inside sales manager": "4",
         "Skladník": "5", "Montážní pracovník": "5",
         "Specialista IT podpory": "1", "IT helpdesk L1": "1", "L1/L2 support": "1",
+        "Customer Care Specialist": "1", "Klientský servis - příchozí hovory": "1", "Pracovník infocentra": "1",
+        "Sekretářka": "2", "Specialista metodické podpory, oblast fakturace": "2",
+        "Prodejce mobilních telefonů junior": "4", "Prodejce / prodejkyně ICT": "4",
         "Asistent nákupčího": "2", "Project Administrator": "2", "Projektový administrátor": "2",
     }
     for title, num in cases.items():
@@ -830,3 +834,26 @@ def test_it_support_only_l1_l2_not_expert():
     for title in ("Senior IT support specialist", "IT podpora L3 expert", "Vedoucí IT podpory", "IT architekt"):
         r = d(title)
         assert not r.keep or r.category != CAT["1"], (title, r)
+
+
+def test_nonstop_needs_operation_context():
+    h = core.hard_reason
+    assert h("Hotline 24/7") is None  # služba firmy, ne směny (dry-run: motopůjčovna)
+    assert h("možnost využití nonstop online lékařské poradny") is None  # benefit (dry-run: Kaufland)
+    assert h("Pracujeme v nepřetržitém provozu") == "nepretrzity"
+    assert h("Provoz 24/7") == "nepretrzity"
+    assert h("Nonstop provoz, směny") == "nepretrzity"
+    assert h("směny 24/7") == "nepretrzity"
+    assert h("provoz 24 hodin denně") == "nepretrzity"
+
+
+def test_home_office_passes_region_level_place():
+    mk = lambda title, place: core.Job(title, "Firma", place, "jobs.cz", "https://x/7")
+    d = lambda title, place: core.decide(mk(title, place), lambda: "Příchozí hovory", PROFILES, [])
+    ho = "Klientský servis pro zákazníky Vodafone (příchozí hovory, plný home office)"
+    assert d(ho, "Pardubický kraj").keep and d(ho, "kraj Vysočina").keep and d(ho, "Celá ČR").keep
+    assert d(ho, "Pardubický kraj").category == CAT["1"]
+    r = d("Klientský servis pro zákazníky Vodafone", "Pardubický kraj")  # bez home office se kraj nepouští
+    assert not r.keep and r.reason == "lokalita"
+    r = d(ho, "Praha")  # konkrétní město mimo lokalitu home office nezachrání
+    assert not r.keep and r.reason == "lokalita"

@@ -84,7 +84,10 @@ NIGHT_RE = re.compile(r"\bnočn", re.I)
 # Zápor na STEJNÉM řádku ruší noční směnu / nepřetržitý / třísměnný provoz ("bez nočních", "není nepřetržitý provoz").
 NIGHT_NEG_RE = re.compile(r"\bbez\b|\bnení\b|\bnejsou\b|\bnebud|\bžádn|\bnemus|vyhn", re.I)
 LICENCE_OK_RE = re.compile(r"výhod|vítán|není\s+(podmínk|nutn|nezbytn|vyžadov)|nepožadujeme|nemusíte", re.I)
-NONSTOP_RE = re.compile(r"nepřetržit\w*\s+(provoz|směn)|\b24\s*/\s*7\b|non-?stop|provoz\w*\s+24\s*hod|24\s*hodin\w*\s+provoz", re.I)
+NONSTOP_RE = re.compile(
+    r"nepřetržit\w*\s+(provoz|směn)|"  # nepřetržitý provoz / nepřetržité směny
+    r"(provoz\w*|směn\w*)\W{0,12}(24\s*/\s*7|non-?stop)|(24\s*/\s*7|non-?stop)\W{0,3}(provoz|směn)|"  # provoz 24/7, nonstop provoz
+    r"provoz\w*\s+24\s*hod|24\s*hodin\w*\s+provoz", re.I)  # holé „Hotline 24/7“ / „nonstop poradna“ jsou benefity, ne směny
 THREE_SHIFT_RE = re.compile(r"třísměnn|tří\s*směnn|\b3\s*směn|tři\s+směn|ve\s+třech\s+směnách", re.I)
 # Řidičské oprávnění: JAKÁKOLIV zmínka vyřadí nabídku (i "výhodou", "vítán", "není podmínkou").
 LICENCE_RE = re.compile(r"řidičsk\w*\s+(průkaz\w*|oprávnění)|řidičák|\bŘP\b|oprávnění\s+k\s+řízení", re.I)
@@ -96,7 +99,11 @@ PLACE_WORDS = [
     "hradec králové", "pardubice", "rychnov nad kněžnou", "kostelec nad orlicí",
     "solnice", "vamberk", "častolovice", "doudleby nad orlicí", "albrechtice nad orlicí",
     "týniště nad orlicí", "borohrádek", "opočno", "dobruška",
+    "holice", "býšť",  # 24. 11. na zadání: okolí Pardubic
 ]
+# Home office: nabídka s místem jen na úrovni kraje / celé ČR projde, když to říká název (poloha je tu vedlejší)
+HOME_OFFICE_RE = re.compile(r"home\s*-?\s*office|práce\s+z\s+domova|\bremote\b|na\s+dálku", re.I)
+REGION_PLACE_RE = re.compile(r"kraj|česká\s+republika|celá\s+čr", re.I)
 
 # Datové soubory a rozhodování
 ROOT = Path(__file__).parent
@@ -266,7 +273,7 @@ def decide(job: "Job", fetch, profiles: list[dict] | None = None, blacklist=()) 
     `profiles=None` = ruční hledání zadaných slov: bez whitelistu oborů, platí blacklist, lokalita a tvrdá pravidla.
     """
     title = job.title.lower()
-    if not place_ok(job.place):
+    if not place_ok(job.place) and not (HOME_OFFICE_RE.search(job.title) and REGION_PLACE_RE.search(job.place)):
         return Decision(False, "lokalita")
     hit = next((w for w in blacklist if w in title), None)
     if hit:
