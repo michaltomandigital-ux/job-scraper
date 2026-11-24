@@ -1,0 +1,163 @@
+{
+  "_pozn": "Pořadí kategorií = priorita (první je nejdůležitější). search = dotazy na portály (bez klíčových slov v příkazu se hledá podle nich). title = regulární výrazy (bez ohledu na velikost písmen) pro shodu v názvu pozice. signaly = regulární výrazy pro hledání v detailu u nabídek BEZ shody v názvu (uloží se, když sedí aspoň MIN_SIGNALS různých). pravidla = pozice s názvem title se vyřadí, když detail obsahuje některý z výrazů (provize/IČO/odchozí hovory u prodeje a call centra, účetní agenda u fakturanta). Po změně pravidel smaž logs/vyrazene.csv, jinak se nedávno vyřazené nabídky nevyhodnotí znovu.",
+  "kategorie": [
+    {
+      "nazev": "1 Zákaznická podpora",
+      "search": [
+        "zákaznická podpora",
+        "zákaznická péče",
+        "technická podpora",
+        "reklamace",
+        "operátor infolinky",
+        "administrátor podpory",
+        "IT podpora",
+        "customer service",
+        "klientský servis",
+        "infocentrum"
+      ],
+      "title": [
+        "zákaznick",
+        "technick\\w* (podpor\\w*|support)\\b(?! (projekt|realizac))|technical support|customer support|helpdesk|help desk|service desk",
+        "reklamac",
+        "infolin|call ?cent|operátor\\w* (příchoz|linky)",
+        "administrátor\\w* podpor",
+        "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bIT\\s+(podpor\\w*|support|helpdesk|service desk))",
+        "^(?!.*(\\bl[34]\\b|senior|expert|architekt|vývojář|developer|sysadmin|administrátor\\w* systém|vedouc|manažer|manager|\\blead\\b))(?=.*\\bl[12]\\b)(?=.*(podpor|support|helpdesk|service desk))",
+        "customer (care|service)",
+        "klientsk\\w+ (servis|podpor)",
+        "infocentr"
+      ],
+      "pravidla": [
+        {
+          "title": "call ?cent|infolin|operátor",
+          "vyradit_pokud_detail": [
+            "proviz",
+            "\\bIČO\\b",
+            "odchozí\\s+hovor"
+          ]
+        }
+      ],
+      "signaly_vypnuto": [
+        "příchoz\\w+ (hovor|telefon|volán|linek)",
+        "infolin",
+        "zákaznick\\w+ (linka|linky|linku|podpor|péč|servis|centr)",
+        "reklamac",
+        "helpdesk|help desk|service desk",
+        "technick\\w+ (podpor|support)",
+        "\\bl[12]\\b",
+        "(dotaz|požadavk|stížnost)\\w* zákazník"
+      ]
+    },
+    {
+      "nazev": "2 Back office a administrativa",
+      "search": [
+        "administrátor objednávek",
+        "koordinátor servisu",
+        "sales support",
+        "administrativní pracovník",
+        "back office",
+        "fakturant",
+        "asistent nákupčího",
+        "project administrator",
+        "sekretářka"
+      ],
+      "title": [
+        "administrátor\\w* objednáv|zpracování objednáv",
+        "koordinátor\\w* servis",
+        "asistent\\w* prodeje|sales support|podpor\\w* prodeje",
+        "administrativn",
+        "back ?-?office",
+        "fakturant",
+        "asistent\\w* nákupč\\w*|project administrator|projektov\\w+ administrátor",
+        "sekretář",
+        "metodick\\w+ podpor\\w*.*fakturac"
+      ],
+      "pravidla": [
+        {
+          "title": "fakturant",
+          "vyradit_pokud_detail": [
+            "vedení účetnictví|samostatn\\w* účetní|účetní závěrk|hlavní knih",
+            "přiznání (k )?dph|kontrolní hlášení|\\bdph\\b",
+            "zaúčtování|účtování",
+            "zpracování mezd|mzdov\\w+ (agend|účetn)"
+          ]
+        }
+      ],
+      "signaly_vypnuto": [
+        "objednáv",
+        "back ?-?office",
+        "fakturac|fakturov",
+        "administrativn\\w+ (činnost|agend|podpor)",
+        "sales support|podpora prodeje|asistent\\w* prodeje",
+        "koordinac\\w* (servis|zakáz|technik)",
+        "evidenc\\w+ (zakáz|objednáv|dokument)"
+      ]
+    },
+    {
+      "nazev": "3 Retail management",
+      "search": [
+        "zástupce vedoucího prodejny",
+        "vedoucí prodejny",
+        "vedoucí směny"
+      ],
+      "title": [
+        "zástupc\\w* vedoucí",
+        "vedouc\\w+ (prodejn|směn|úsek)"
+      ],
+      "signaly_vypnuto": [
+        "(řízení|vedení) (prodejn|týmu|kolektivu|směn|provozovn)",
+        "inventur",
+        "objednáv\\w+ zboží|zásobování prodejn",
+        "(zástupce|zástupkyně) vedoucí",
+        "rozpis\\w* směn|plánování směn|docházk"
+      ]
+    },
+    {
+      "nazev": "4 Prodej",
+      "search": [
+        "prodejce elektroniky",
+        "prodejce operátor",
+        "inside sales",
+        "telefonický prodej",
+        "prodavač",
+        "prodejce mobilních telefonů"
+      ],
+      "title": [
+        "prodejc(?=.*(operátor|\\bo2\\b|t-mobile|vodafone))",
+        "prodej\\w* elektron",
+        "inside ?sales",
+        "telefonick\\w+ prodej|telefonní prodej",
+        "prodejc\\w*[^|]{0,25}(mobiln|\\bict\\b)"
+      ],
+      "pravidla": [
+        {
+          "title": "prodejc|inside ?sales|telefonick\\w+ prodej|telefonní prodej",
+          "vyradit_pokud_detail": [
+            "proviz",
+            "\\bIČO\\b",
+            "odchozí\\s+hovor"
+          ]
+        }
+      ],
+      "signaly_vypnuto": [
+        "\\btarif(y|ů|em|u)?\\b|mobiln\\w+ (telefon|služb)",
+        "\\bo2\\b|t-mobile|vodafone",
+        "telefonick\\w+ (prodej|obchod)",
+        "inside ?sales",
+        "péče o (stávající|současn)\\w* (klient|zákazník)"
+      ]
+    },
+    {
+      "nazev": "5 Fyzická práce (nouzovka)",
+      "search": [
+        "skladník",
+        "montáž"
+      ],
+      "title": [
+        "skladn",
+        "montáž|montážn"
+      ],
+      "signaly": []
+    }
+  ]
+}
