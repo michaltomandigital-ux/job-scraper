@@ -169,9 +169,14 @@ def place_ok(place: str) -> bool:
     return not p or any(w in p for w in PLACE_WORDS)
 
 
-def _line_hit(text: str, pos: re.Pattern, neg: re.Pattern) -> bool:
-    """True, když některý řádek odpovídá `pos` a není na něm zápor `neg`."""
-    return any(pos.search(line) and not neg.search(line) for line in text.split("\n"))
+def _line_hit(text: str, pos: re.Pattern, neg: re.Pattern) -> str | None:
+    """První řádek, který odpovídá `pos` a není na něm zápor `neg` (zkrácený na 120 znaků), jinak None."""
+    for line in text.split("\n"):
+        m = pos.search(line)
+        if m and not neg.search(line):
+            start = max(0, m.start() - 50)
+            return line[start:start + 120].strip()
+    return None
 
 
 @dataclass
@@ -184,19 +189,25 @@ class Decision:
     note: str = ""  # upřesnění důvodu (zasažený výraz blacklistu apod.)
 
 
-def hard_reason(text: str) -> str | None:
-    """Kód důvodu vyřazení podle tvrdých pravidel (název i detail), jinak None. Dvousměnný provoz projde."""
-    if LICENCE_RE.search(text):
-        return "ridicak"
-    if VZV_RE.search(text):
-        return "vzv"
-    if _line_hit(text, NIGHT_RE, NIGHT_NEG_RE):
-        return "noc"
-    if _line_hit(text, NONSTOP_RE, NIGHT_NEG_RE):
-        return "nepretrzity"
-    if _line_hit(text, THREE_SHIFT_RE, NIGHT_NEG_RE):
-        return "trismenny"
+def hard_hit(text: str) -> tuple[str, str] | None:
+    """(kód důvodu, zasažený úryvek) podle tvrdých pravidel (název i detail), jinak None. Dvousměnný provoz projde."""
+    for code, pos, neg in (("ridicak", LICENCE_RE, None), ("vzv", VZV_RE, None), ("noc", NIGHT_RE, NIGHT_NEG_RE),
+                           ("nepretrzity", NONSTOP_RE, NIGHT_NEG_RE), ("trismenny", THREE_SHIFT_RE, NIGHT_NEG_RE)):
+        if neg is None:
+            m = pos.search(text)
+            if m:
+                return code, text[max(0, m.start() - 50):m.start() + 70].replace("\n", " ").strip()
+        else:
+            snippet = _line_hit(text, pos, neg)
+            if snippet:
+                return code, snippet
     return None
+
+
+def hard_reason(text: str) -> str | None:
+    """Jen kód důvodu z `hard_hit` (nebo None)."""
+    hit = hard_hit(text)
+    return hit[0] if hit else None
 
 
 def load_profiles(path: Path = PROFILES_FILE) -> list[dict]:
@@ -236,9 +247,9 @@ def decide(job: "Job", fetch, profiles: list[dict] | None = None, blacklist=()) 
     hit = next((w for w in blacklist if w in title), None)
     if hit:
         return Decision(False, "blacklist", note=hit)
-    reason = hard_reason(job.title)
-    if reason:
-        return Decision(False, reason)
+    hard = hard_hit(job.title)
+    if hard:
+        return Decision(False, hard[0], note=f"název: {hard[1]}")
     cat = next((c for c in profiles or [] if any(p.search(title) for p in c["title"])), None)
     text = fetch()
     if text is None:  # detail nešlo ověřit: shoda v názvu / ruční hledání se uloží (a počítá se), jinak nelze rozhodnout
@@ -246,15 +257,17 @@ def decide(job: "Job", fetch, profiles: list[dict] | None = None, blacklist=()) 
             return Decision(True, "detail_neovereno", cat["nazev"] if cat else "", TITLE_SCORE if cat else 0,
                             "název" if cat else "")
         return Decision(False, "detail_nedostupny")
-    reason = hard_reason(text)
-    if reason:
-        return Decision(False, reason)
+    hard = hard_hit(text)
+    if hard:
+        return Decision(False, hard[0], note=f"detail: {hard[1]}")
     if not profiles:
         return Decision(True, "ok")
     if cat:
         for rule in cat["pravidla"]:
-            if rule["title"].search(title) and any(p.search(text) for p in rule["vyradit"]):
-                return Decision(False, "pravidlo", note=rule["title"].pattern)
+            if rule["title"].search(title):
+                m = next((m for m in (p.search(text) for p in rule["vyradit"]) if m), None)
+                if m:
+                    return Decision(False, "pravidlo", note=f"detail: {text[max(0, m.start() - 50):m.start() + 70]}".replace("\n", " "))
         return Decision(True, "ok", cat["nazev"], TITLE_SCORE + min(_signal_hits(text, cat), 5), "název")
     hits, best = max(((_signal_hits(text, c), c) for c in profiles), key=lambda x: x[0])  # shoda -> vyšší priorita
     if hits >= MIN_SIGNALS:

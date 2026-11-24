@@ -24,12 +24,14 @@ Zadání a pravidla jsou v `CLAUDE.md`. Tady je historie a to, co se ověřilo n
 - Zámek `.run.lock` starší než hodina se ignoruje (po spadlém běhu).
 
 ## Evidence změn slovníku (nejnovější nahoře)
+- 2026-11-24: `profese.json` po prvním plném dry-runu (šum: Foxconn, SERVISBAL, Manuvia, 5× prodavač, revizní technik): kat. 4 −`prodavač` (není v zadání), signály kat. 4 −`elektronik`, `tarif` jen jako slovo; kat. 1 title „technická podpora“ ne před „projekt/realizac“. Detail zůstává zapnutý (MIN_SIGNALS=2), ověřit dalším během.
 - 2026-11-24: `blacklist.txt` = sloučené `BLACKLIST` + `BLACKLIST_HARD` beze změny obsahu (+ viz výše).
 - 2026-11-20: `BLACKLIST` +zámečník, svářeč, autoklempíř, instalatér, topenář, montér, elektromontáž, plynovod, realit, makléř, investiční specialist, systémový inženýr, informačních systémů (šum z ostrého běhu; na pokyn uživatele). Už zapsané řádky v Notionu zůstávají.
 - 2026-11-20: `prodavač` odebráno z `BLACKLIST_HARD` (přání uživatele).
 - 2026-11-19: přejmenování seznamů na `BLACKLIST` / `BLACKLIST_HARD` / `WHITELIST`, obsah beze změny.
 
 ## Běhy
+- 2026-11-24 (první plný dry-run podle profesí, před úpravou signálů): 898 kandidátů (jobs.cz 550, jenprace.cz 348), 21 nových, 154 už existovalo, 723 vyřazeno (lokalita 565, řidičák 54, bez shody 50, blacklist 27, VZV 11, noc 10, nepřetržitý 5, pravidlo 1). Nálezy z detailu: 5, všech 5 šum.
 - 2026-11-06 (první): 289 nově zapsaných, 1195 už existovalo.
 - 2026-11-06 (s archivací duplicit): 5 nově zapsaných, 1448 už existovalo, 35 vyřazeno filtrem oborů, 17 duplicit archivováno.
 

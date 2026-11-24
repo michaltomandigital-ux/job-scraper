@@ -588,7 +588,7 @@ def test_whitelist_title_match_gives_category_and_priority():
         "Asistent prodeje": "2", "Administrativní pracovník": "2", "Referent back office": "2",
         "Zástupce vedoucího prodejny": "3", "Vedoucí prodejny": "3", "Vedoucí směny / úseku": "3",
         "Prodejce elektroniky": "4", "Prodejce u operátora O2": "4", "Inside sales manager": "4",
-        "Prodavač/ka": "4", "Skladník": "5", "Montážní pracovník": "5",
+        "Skladník": "5", "Montážní pracovník": "5",
     }
     for title, num in cases.items():
         r = d(title)
@@ -642,7 +642,8 @@ def test_commission_ico_outbound_calls_drop_sales_and_call_centre():
     assert d("Inside sales", "Spolupráce na IČO").reason == "pravidlo"
     assert d("Operátor/ka infolinky", "Příchozí i odchozí hovory").reason == "pravidlo"
     assert d("Prodejce elektroniky", "Fixní mzda, péče o stávající klienty").keep
-    assert d("Prodavač/ka", "Prémie a provize z prodeje").keep  # prodavač pod pravidlo nespadá
+    assert not d("Prodavač/ka", "Prémie a provize z prodeje").keep  # generický prodavač není v zadání (bez_shody)
+    assert d("Vedoucí směny", "Prémie a provize z prodeje").keep  # retail management pod pravidlo nespadá
 
 
 def test_decide_fetches_detail_at_most_once_and_only_when_needed():
@@ -768,3 +769,23 @@ def test_summary_lists_reasons_and_missing_columns():
     assert "vyřazeno: 6 (řidičské oprávnění 5, noční směny 1)" in out
     assert "nalezeno z detailu" in out and "Skóre" in out and "nedávno vyřazeno): 3" in out
 
+
+
+def test_decide_hard_rejection_note_contains_matched_text():
+    job = core.Job("Specialista", "Firma", "Pardubice", "jobs.cz", "https://x/1")
+    d = core.decide(job, lambda: "Požadujeme řidičský průkaz skupiny B.\nNabízíme benefity.", None, [])
+    assert (d.keep, d.reason) == (False, "ridicak")
+    assert "řidičský průkaz" in d.note
+    d = core.decide(job, lambda: "Provoz firmy\nPracujeme v nepřetržitém provozu 24/7.", None, [])
+    assert d.reason == "nepretrzity" and "24/7" in d.note
+
+
+def test_noise_regressions_from_first_full_dry_run():
+    """Nabídky, které první ostrý dry-run zbytečně uložil (Foxconn, revizní technik, generický prodavač)."""
+    profiles = core.load_profiles()
+    d = lambda title, text: core.decide(core.Job(title, "F", "Pardubice", "jobs.cz", "https://x/9"), lambda: text, profiles, [])
+    assert not d("Technik výroby (m/ž) - herních konzolí", "Elektronika, tarifní mzda, výroba elektroniky").keep
+    assert not d("Revizní technik | Technická podpora projektů a realizace", "Revize elektro").keep
+    assert not d("Prodavač / prodavačka", "Prodej pečiva").keep
+    assert d("Specialista technické podpory zákazníků", "Příchozí hovory, helpdesk").keep
+    assert d("Prodavač/ka - vedoucí směny", "Řízení směny").keep

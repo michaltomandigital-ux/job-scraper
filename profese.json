@@ -13,7 +13,7 @@
       ],
       "title": [
         "zákaznick",
-        "technick\\w* (podpor|support)|technical support|customer support|helpdesk|help desk|service desk",
+        "technick\\w* (podpor\\w*|support)\\b(?! (projekt|realizac))|technical support|customer support|helpdesk|help desk|service desk",
         "reklamac",
         "infolin|call ?cent|operátor\\w* (příchoz|linky)",
         "administrátor\\w* podpor"
@@ -110,12 +110,10 @@
         "prodejc(?=.*(operátor|\\bo2\\b|t-mobile|vodafone))",
         "prodej\\w* elektron",
         "inside ?sales",
-        "telefonick\\w+ prodej|telefonní prodej",
-        "prodavač"
+        "telefonick\\w+ prodej|telefonní prodej"
       ],
       "signaly": [
-        "tarif|mobiln\\w+ (telefon|služb)",
-        "elektronik",
+        "\\btarif(y|ů|em|u)?\\b|mobiln\\w+ (telefon|služb)",
         "\\bo2\\b|t-mobile|vodafone",
         "telefonick\\w+ (prodej|obchod)",
         "inside ?sales",
