@@ -13,27 +13,9 @@ FIX = ROOT / "tests" / "fixtures"
 read = lambda n: (FIX / n).read_text(encoding="utf-8")
 
 
-def test_is_excluded_by_title():
-    mk = lambda t: core.Job(t, "f", "p", "jobs.cz", "https://www.jobs.cz/rpd/1/")
-    assert core.is_excluded(mk("Recepční na ubytovně"))
-    assert not core.is_excluded(mk("Prodavač/ka - Choceň"))  # prodavač už není na blacklistu (2026-11-20)
-    assert core.is_excluded(mk("Finanční poradce - F2F"))
-    assert core.is_excluded(mk("Obchodník door to door"))
-    assert not core.is_excluded(mk("Specialista prodeje - home office"))
-    assert not core.is_excluded(mk("Obchodní zástupce v B2B"))
-    assert core.is_excluded(mk("Operátor výroby - noční směny"))
-    assert core.is_excluded(mk("Skladník, 12h denní i noční"))
-    assert not core.is_excluded(mk("Skladník, bez nočních, víkendy volné"))
-    assert core.is_excluded(mk("MUDr. / lékařka na ambulanci"))
-    assert core.is_excluded(mk("Pracovník v sociálních službách"))
-    assert core.is_excluded(mk("Pečovatelka / pečující"))
-    assert core.is_excluded(mk("Asistent péče v domově pro seniory"))
-    assert not core.is_excluded(mk("Vánoční příprava skladu"))  # "vánoční" není noční
-    assert not core.is_excluded(mk("Skladník - řidič"))
-    assert core.is_excluded(mk("Skladník - řidič VZV"))  # VZV vyřadí vždy, i chtěnou pozici
-    assert core.is_excluded(mk("Skladník (bez nutnosti VZV)"))
-    assert core.is_excluded(mk("Obsluha vysokozdvižného vozíku"))
-    assert core.is_excluded(mk("Skladník - noční směny"))  # noční směny ale vyřadí i skladníka
+@pytest.fixture(autouse=True)
+def _tmp_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "LOG_DIR", tmp_path / "logs")  # logs/vyrazene*.csv nikdy do repa
 
 
 def test_parse_cz_date():
@@ -161,19 +143,6 @@ def test_place_ok():
         assert not core.place_ok(out)
 
 
-def test_requires_driving_licence():
-    assert core.requires_driving_licence("Něco\nŘidičský průkaz B\nDalší")
-    assert core.requires_driving_licence("Řidičské oprávnění sk. B (aktivní řidič)")
-    assert core.requires_driving_licence("Řidičské oprávnění\nSkupina B")
-    assert not core.requires_driving_licence("Výhodou vám bude řidičský průkaz sk. B")
-    assert not core.requires_driving_licence("Řidičský průkaz skupiny B - vítán")
-    assert not core.requires_driving_licence("Řidič / Řidička\nPrávo")  # odkaz v menu portálu
-    # "výhodou" v samostatném tagu skončí po get_text("\n") na dalším řádku
-    from bs4 import BeautifulSoup
-    html = "<ul><li>Řidičský průkaz sk. B <strong>výhodou</strong></li><li>Angličtina</li></ul>"
-    assert not core.requires_driving_licence(BeautifulSoup(html, "html.parser").get_text("\n", strip=True))
-
-
 def test_parse_cz_date_feb_29_in_common_year():
     assert core.parse_cz_date("29. února", date(2027, 3, 5)) is None  # dřív ValueError -> spadl celý portál
 
@@ -293,25 +262,13 @@ def _run(monkeypatch, notion, dry_run, detail="", title="Analytik", posted=None)
     monkeypatch.setattr(core, "Notion", lambda *a: notion)
     monkeypatch.setattr(core, "search_portal", lambda c, n, k: ([job] if n == "jobs.cz" else [], 0))
     monkeypatch.setattr(core, "fetch_detail_text", lambda *a: detail)
-    monkeypatch.setattr(core, "is_relevant", lambda *a: True)  # relevanci testuje test_is_relevant
     return core.run(["x"], dry_run=dry_run)
-
-
-def test_has_night_shift():
-    assert core.has_night_shift("Pracovní doba\nDvousměnný provoz včetně nočních směn")
-    assert core.has_night_shift("Noční směny 22:00-6:00")
-    assert not core.has_night_shift("Pracovní doba: bez nočních směn")
-    assert not core.has_night_shift("Noční směny nejsou")
-    assert not core.has_night_shift("Pracovní doba\nPraktická pomoc, žádné noční")
-    assert not core.has_night_shift("Ranní a odpolední směny")
-    assert not core.has_night_shift("Benefity\nVánoční odměny a firemní večírek")
-    assert core.has_night_shift("Noční směny 22-6\nPráce bez nutnosti praxe")  # zápor jen na stejném řádku
 
 
 def test_cli_notify_escapes_and_survives_telegram_error(monkeypatch, capsys):
     import scrape
-    res = {"new": [], "skipped_existing": 2, "excluded": 1, "excluded_licence": 0, "excluded_night": 0, "excluded_vzv": 0,
-           "licence_unchecked": 0, "duplicates_archived": 0, "write_errors": 0,
+    res = {"new": [], "skipped_existing": 2, "excluded": {"ridicak": 1}, "manual_check": 0,
+           "duplicates_archived": 0, "write_errors": 0,
            "portals": {"jobs.cz": "error: HTTPStatusError: url '...?q=x&page=1' <Response>"}}
     sent = []
     monkeypatch.setattr(core, "run", lambda *a, **k: res)
@@ -331,13 +288,13 @@ def test_cli_notify_escapes_and_survives_telegram_error(monkeypatch, capsys):
 def test_night_shift_in_detail_excluded(monkeypatch):
     n = _FakeNotion()
     res = _run(monkeypatch, n, False, detail="Noční směny 22:00-6:00")
-    assert res["excluded_night"] == 1 and res["new"] == [] and n.created == []
+    assert res["excluded"] == {"noc": 1} and res["new"] == [] and n.created == []
 
 
 def test_vzv_in_detail_excluded_even_as_advantage(monkeypatch):
     n = _FakeNotion()
     res = _run(monkeypatch, n, False, detail="Požadujeme\nOprávnění VZV výhodou")
-    assert res["excluded_vzv"] == 1 and res["new"] == [] and n.created == []
+    assert res["excluded"] == {"vzv": 1} and res["new"] == [] and n.created == []
 
 
 def test_dry_run_writes_nothing(monkeypatch):
@@ -371,42 +328,6 @@ def test_rejected_offer_is_not_written_again(monkeypatch):
         assert n.created == [] and res["new"] == [] and res["skipped_existing"] == 1 and n.archived == []
 
 
-def test_needs_review_titles():
-    mk = lambda t: core.Job(t, "f", "p", "jobs.cz", "https://www.jobs.cz/rpd/1/")
-    assert core.needs_review(mk("Obchodní zástupce"))
-    assert core.needs_review(mk("Telesales operátor"))
-    assert core.needs_review(mk("Sales Specialist"))
-    assert not core.needs_review(mk("Team leader zákaznické podpory"))
-    assert not core.needs_review(mk("Salesforce administrátor"))
-
-
-def test_classify_description():
-    c = core.classify_description
-    assert c("Péče o stávající klienty, příchozí hovory, reklamace") == "keep"
-    assert c("Získávání nových klientů, akvizice, uzavírání obchodů, helpdesk podpora") == "drop"
-    assert c("Příchozí hovory, reklamace, tickety, CRM. Provize z prodeje") == "drop"  # provize vždy vyřadí
-    assert c("Práce na IČO, administrativa, reklamace, onboarding") == "drop"
-    assert c("Odchozí hovory i příchozí hovory, administrativa, reklamace") == "drop"
-    assert c("Akvizice nových zákazníků, reklamace") == "manual"  # remíza
-    assert c("Pracujeme v příjemném kolektivu") == "manual"  # žádné signály
-
-
-def test_review_title_run(monkeypatch):
-    t = "Obchodní zástupce"
-    n = _FakeNotion()
-    res = _run(monkeypatch, n, False, title=t, detail="Provizní systém, nábor")
-    assert res["excluded_sales"] == 1 and n.created == []
-    n = _FakeNotion()
-    res = _run(monkeypatch, n, False, title=t, detail="Reklamace, příchozí hovory")
-    assert len(n.created) == 1 and n.notes == [""] and res["manual_check"] == 0
-    n = _FakeNotion()
-    res = _run(monkeypatch, n, False, title=t, detail="Nic zvláštního")
-    assert n.notes == [core.MANUAL_LABEL] and res["manual_check"] == 1
-    n = _FakeNotion()  # detail nešel stáhnout -> ponechat, ručně ověřit
-    res = _run(monkeypatch, n, False, title=t, detail=None)
-    assert n.notes == [core.MANUAL_LABEL] and res["manual_check"] == 1
-
-
 # ---------------------------------------------------------------- opravy z auditu
 def test_search_continues_when_page_is_all_repeats(monkeypatch):
     """Stránka 1 jen z už nalezených nabídek (překryv měst) nesmí zastavit čtení stránky 2."""
@@ -420,10 +341,6 @@ def test_search_continues_when_page_is_all_repeats(monkeypatch):
         return httpx.Response(200, text=f"<html>{body}</html>")
     jobs, _ = _search(monkeypatch, handler)
     assert {j.url for j in jobs} == {"https://www.jobs.cz/rpd/1/", "https://www.jobs.cz/rpd/2/"}
-
-
-def test_licence_heading_next_line_does_not_make_it_optional():
-    assert core.requires_driving_licence("Požadujeme řidičský průkaz sk. B\nZaměstnanecké výhody\n13. plat")
 
 
 def test_blank_company_and_place_are_not_deduplicated():
@@ -473,37 +390,6 @@ def test_second_live_run_is_refused_while_lock_is_held(monkeypatch, tmp_path):
             core.run(["x"])
         assert core.run(["x"], dry_run=True) == {"ok": True}  # dry-run zámek nepotřebuje
     assert core.run(["x"]) == {"ok": True} and not core.LOCK_FILE.exists()
-
-
-def test_filter_order_excluded_blacklist_whitelist():
-    """Pořadí: BLACKLIST_HARD > noc/VZV > WHITELIST > BLACKLIST."""
-    job = lambda t: core.Job(t, "F", "Pardubice", "jobs.cz", "u")
-    assert core.is_excluded(job("Recepční"))                    # BLACKLIST
-    assert core.is_excluded(job("Montér/opravář plynovodů"))    # BLACKLIST (řemesla)
-    assert core.is_excluded(job("Ženy a reality | Rychnov"))    # BLACKLIST (reality)
-    assert not core.is_excluded(job("Pracovník/ice pro montáž sedaček"))  # montáž dál projde
-    assert not core.is_excluded(job("Skladník – řidič"))        # WHITELIST přebije BLACKLIST
-    assert core.is_excluded(job("Skladník – noční směny"))      # noc přebije WHITELIST
-    assert core.is_excluded(job("Skladník VZV"))                # VZV přebije WHITELIST
-    assert core.is_excluded(job("Finanční poradce a skladník"))  # BLACKLIST_HARD přebije WHITELIST
-
-
-def test_is_relevant():
-    job = lambda t, c="F": core.Job(t, c, "Pardubice", "jobs.cz", "u")
-    pad = " " * 1000  # kratší detail je neověřitelný, potvrzení se přeskočí
-    assert core.is_relevant(job("Specialista zákaznické podpory"), "reklamace, back office" + pad)  # název + detail
-    assert not core.is_relevant(job("Revizní technik | Technická podpora"), "technická podpora" + pad)  # název bez potvrzení
-    assert not core.is_relevant(job("Vedoucí obchodu | Technické B2B"), "reklamace, back office" + pad)  # zúženo
-    assert core.is_relevant(job("Bankéř"), "bankéř")                        # krátký detail + zásah v názvu
-    assert core.is_relevant(job("Konzultant centra služeb zákazníkům"), None)
-    # bez zásahu v názvu nabídku nezachrání ani detail, ani krátký/chybějící detail
-    assert not core.is_relevant(job("Autoklempíř"), "reklamace, back office, referent" + pad)
-    assert not core.is_relevant(job("Montér/opravář plynovodů"), None)
-    assert not core.is_relevant(job("Technik elektromontáže"), "")
-    # státní sektor podle zaměstnavatele
-    assert core.is_relevant(job("Specialista pro CS", "Úřad práce České republiky"), None)
-    assert core.is_relevant(job("Tajemník", "Město Kostelec nad Orlicí"), None)
-    assert not core.is_relevant(job("Účetní", "Dopravní podnik města Pardubic a.s."), None)
 
 
 # ---------------------------------------------------------------- opravy z druhého auditu
@@ -604,3 +490,281 @@ def test_failed_write_does_not_archive_older_row(monkeypatch):
     n = _FakeNotion(fail=True, rows=[_row("old", "u", created="2026-11-01T08:00:00.000Z")])
     res = _run(monkeypatch, n, False, posted=date(2026, 11, 10))
     assert res["write_errors"] == 1 and n.archived == []  # starý řádek zůstane, když nový nejde zapsat
+
+
+# ---------------------------------------------------------------- decide(): pravidla bez profilů (ruční hledání)
+def _decide(title, text="", place="Pardubice", profiles=None, fetch=None, company="Firma"):
+    j = core.Job(title, company, place, "jobs.cz", "https://www.jobs.cz/rpd/1/")
+    return core.decide(j, fetch or (lambda: text), profiles, core.load_blacklist())
+
+
+def test_decide_title_rules_without_profiles():
+    """Ruční hledání (profiles=None): blacklist, lokalita a tvrdá pravidla, žádný whitelist."""
+    ok = lambda t, **k: _decide(t, **k).keep
+    why = lambda t, **k: _decide(t, **k).reason
+    assert why("Recepční na ubytovně") == "blacklist"
+    assert why("Finanční poradce - F2F") == "blacklist"
+    assert why("Obchodník door to door") == "blacklist"
+    assert why("Montér/opravář plynovodů") == "blacklist"
+    assert why("Ženy a reality | Rychnov") == "blacklist"
+    assert why("Prodavač/ka - Choceň", place="Choceň") == "lokalita"
+    assert ok("Prodavač/ka - Pardubice")  # prodavač není na blacklistu
+    assert ok("Pracovník/ice pro montáž sedaček")
+    assert ok("Specialista prodeje - home office") and ok("Obchodní zástupce v B2B")
+    assert why("Operátor výroby - noční směny") == "noc"
+    assert why("Skladník, 12h denní i noční") == "noc"
+    assert ok("Skladník, bez nočních, víkendy volné")
+    assert why("MUDr. / lékařka na ambulanci") == "blacklist"
+    assert why("Pracovník v sociálních službách") == "blacklist"
+    assert why("Pečovatelka / pečující") == "blacklist"
+    assert why("Asistent péče v domově pro seniory") == "blacklist"
+    assert ok("Vánoční příprava skladu")  # "vánoční" není noční
+    assert why("Skladník - řidič") == "blacklist"  # řidič platí vždy, whitelist "skladn" je zrušen
+    assert why("Prodavač/pokladní") == "blacklist"
+    assert why("Skladník - řidič VZV") == "blacklist"
+    assert why("Skladník (bez nutnosti VZV)") == "vzv"
+    assert why("Obsluha vysokozdvižného vozíku") == "vzv"
+    assert why("Skladník - noční směny") == "noc"
+    assert why("Kuchař / kuchařka") == "blacklist"
+
+
+def test_hard_reason_driving_licence_any_mention():
+    h = core.hard_reason
+    assert h("Něco\nŘidičský průkaz B\nDalší") == "ridicak"
+    assert h("Řidičské oprávnění sk. B (aktivní řidič)") == "ridicak"
+    assert h("Výhodou vám bude řidičský průkaz sk. B") == "ridicak"  # i "výhodou"
+    assert h("Řidičský průkaz skupiny B - vítán") == "ridicak"
+    assert h("Požadujeme řidičského průkazu skupiny B") == "ridicak"  # skloňování (dřív neodchyceno)
+    assert h("Máte řidičák? Super") == "ridicak"
+    assert h("Platné ŘP skupiny B") == "ridicak"
+    assert h("Řidič / Řidička\nPrávo") is None  # samotné slovo řidič není oprávnění
+    assert h("Bude vás zajímat naše řešení zpráv") is None  # "řp" uvnitř slova nesmí chytat
+    from bs4 import BeautifulSoup
+    html = "<ul><li>Řidičský průkaz sk. B <strong>výhodou</strong></li><li>Angličtina</li></ul>"
+    assert h(BeautifulSoup(html, "html.parser").get_text("\n", strip=True)) == "ridicak"
+
+
+def test_hard_reason_shifts():
+    h = core.hard_reason
+    assert h("Pracovní doba\nDvousměnný provoz včetně nočních směn") == "noc"
+    assert h("Noční směny 22:00-6:00") == "noc"
+    assert h("Pracovní doba: bez nočních směn") is None
+    assert h("Noční směny nejsou") is None
+    assert h("Pracovní doba\nPraktická pomoc, žádné noční") is None
+    assert h("Ranní a odpolední směny") is None
+    assert h("Benefity\nVánoční odměny a firemní večírek") is None
+    assert h("Noční směny 22-6\nPráce bez nutnosti praxe") == "noc"  # zápor jen na stejném řádku
+    assert h("Dvousměnný provoz, pondělí až pátek") is None  # dvousměnný je v pořádku
+    assert h("Práce v nepřetržitém provozu") == "nepretrzity"
+    assert h("Nepřetržitý provoz 24/7") == "nepretrzity"
+    assert h("Služba non-stop") == "nepretrzity"
+    assert h("Pracujeme bez nepřetržitého provozu") is None
+    assert h("Třísměnný provoz") == "trismenny"
+    assert h("Práce na 3 směny") == "trismenny"
+    assert h("Pracovní doba: tři směny týdně střídání") == "trismenny"
+
+
+# ---------------------------------------------------------------- profese.json, whitelist, detail
+PROFILES = core.load_profiles()
+CAT = {c["nazev"].split()[0]: c["nazev"] for c in PROFILES}  # "1" -> "1 Zákaznická podpora"
+
+
+def test_profiles_and_blacklist_files_are_valid():
+    assert [c["nazev"][0] for c in PROFILES] == ["1", "2", "3", "4", "5"]  # pořadí = priorita
+    assert all(c["search"] and c["title"] for c in PROFILES)
+    kws = core.search_keywords(PROFILES)
+    assert len(kws) == len(set(kws)) and "zákaznická podpora" in kws and "montáž" in kws
+    bl = core.load_blacklist()
+    for w in ("kuchař", "recepční", "řidič", "finanční poradc", "montér", "pokladní"):
+        assert w in bl
+    assert not any(w.startswith("#") or w != w.lower() for w in bl)
+
+
+def test_whitelist_title_match_gives_category_and_priority():
+    d = lambda t, text="": _decide(t, text, profiles=PROFILES)
+    cases = {
+        "Specialista zákaznické péče": "1", "Technická podpora L1/L2": "1", "Specialista reklamací": "1",
+        "Operátor/ka infolinky": "1", "Administrátor objednávek": "2", "Koordinátor servisu": "2",
+        "Asistent prodeje": "2", "Administrativní pracovník": "2", "Referent back office": "2",
+        "Zástupce vedoucího prodejny": "3", "Vedoucí prodejny": "3", "Vedoucí směny / úseku": "3",
+        "Prodejce elektroniky": "4", "Prodejce u operátora O2": "4", "Inside sales manager": "4",
+        "Prodavač/ka": "4", "Skladník": "5", "Montážní pracovník": "5",
+    }
+    for title, num in cases.items():
+        r = d(title)
+        assert r.keep and r.category == CAT[num] and r.source == "název", (title, r)
+    assert d("Zákaznická podpora - montáž").category == CAT["1"]  # vyšší priorita vyhrává
+
+
+def test_no_title_match_and_no_signals_is_rejected():
+    r = _decide("Operátor výroby", "Obsluha stroje, balení, údržba", profiles=PROFILES)
+    assert not r.keep and r.reason == "bez_shody"
+
+
+def test_detail_discovery_needs_two_different_signals():
+    text = "Čeká vás práce s příchozími hovory a řešení reklamací zákazníků. Nabízíme benefity."
+    r = _decide("Referent obsluhy klientů", text, profiles=PROFILES)
+    assert r.keep and r.source == "detail" and r.category == CAT["1"] and r.score >= 2
+    r = _decide("Referent obsluhy klientů", "Řešení reklamací", profiles=PROFILES)  # jen jeden signál
+    assert not r.keep and r.reason == "bez_shody"
+    r = _decide("Referent obsluhy klientů", text + " Požadujeme řidičský průkaz.", profiles=PROFILES)
+    assert not r.keep and r.reason == "ridicak"  # tvrdá pravidla platí i pro nalezené z detailu
+    assert _decide("Kuchař - zákaznická linka", text, profiles=PROFILES).reason == "blacklist"
+
+
+def test_category_5_is_never_found_from_detail():
+    text = "montáž montáž sklad skladník skladové zásoby"
+    assert not _decide("Referent", text, profiles=PROFILES).keep  # kat. 5 nemá signály
+
+
+def test_hard_rules_apply_to_title_matches_in_detail():
+    d = lambda text: _decide("Specialista zákaznické péče", text, profiles=PROFILES)
+    assert d("Výhodou řidičský průkaz skupiny B").reason == "ridicak"
+    assert d("Noční směny").reason == "noc"
+    assert d("Nepřetržitý provoz").reason == "nepretrzity"
+    assert d("Třísměnný provoz").reason == "trismenny"
+    assert d("Obsluha VZV").reason == "vzv"
+    assert d("Dvousměnný provoz, pondělí až pátek").keep
+
+
+def test_fakturant_only_basic_agenda():
+    d = lambda text: _decide("Fakturant/ka", text, profiles=PROFILES)
+    assert d("Vystavování faktur, kontrola plateb, komunikace s klienty").keep
+    r = d("Samostatné vedení účetnictví a zpracování přiznání k DPH")
+    assert not r.keep and r.reason == "pravidlo"
+    assert _decide("Samostatná účetní", "vedení účetnictví", profiles=PROFILES).reason == "bez_shody"
+
+
+def test_commission_ico_outbound_calls_drop_sales_and_call_centre():
+    """Pravidlo převzaté z dřívějšího filtru: provize / IČO / odchozí hovory vyřadí prodej a call centrum."""
+    d = lambda title, text: _decide(title, text, profiles=PROFILES)
+    assert d("Prodejce elektroniky", "Provizní systém odměňování").reason == "pravidlo"
+    assert d("Inside sales", "Spolupráce na IČO").reason == "pravidlo"
+    assert d("Operátor/ka infolinky", "Příchozí i odchozí hovory").reason == "pravidlo"
+    assert d("Prodejce elektroniky", "Fixní mzda, péče o stávající klienty").keep
+    assert d("Prodavač/ka", "Prémie a provize z prodeje").keep  # prodavač pod pravidlo nespadá
+
+
+def test_decide_fetches_detail_at_most_once_and_only_when_needed():
+    calls = []
+    fetch = lambda: calls.append(1) or "Příchozí hovory, reklamace"
+    _decide("Recepční", fetch=fetch, profiles=PROFILES)  # blacklist: detail netřeba
+    _decide("Specialista", place="Kolín", fetch=fetch, profiles=PROFILES)  # lokalita: detail netřeba
+    _decide("Noční operátor", fetch=fetch, profiles=PROFILES)  # tvrdé pravidlo v názvu
+    assert calls == []
+    _decide("Specialista zákaznické péče", fetch=fetch, profiles=PROFILES)
+    assert calls == [1]
+
+
+def test_unreachable_detail():
+    none = lambda: None
+    r = _decide("Vedoucí prodejny", fetch=none, profiles=PROFILES)
+    assert r.keep and r.reason == "detail_neovereno" and r.category == CAT["3"]  # shoda v názvu se uloží
+    r = _decide("Referent", fetch=none, profiles=PROFILES)
+    assert not r.keep and r.reason == "detail_nedostupny"  # bez shody v názvu nelze rozhodnout (dočasné)
+    assert _decide("Analytik", fetch=none).keep  # ruční hledání: jako dřív se uloží
+
+
+# ---------------------------------------------------------------- běh s profily, logy, Notion sloupce
+def _run_profiles(monkeypatch, jobs, details, notion, dry_run=False, keywords=None, searched=None):
+    monkeypatch.setenv("NOTION_TOKEN", "t")
+    monkeypatch.setenv("NOTION_DATABASE_ID", "d")
+    monkeypatch.setattr(core, "load_dotenv", lambda: None)
+    monkeypatch.setattr(core, "Notion", lambda *a: notion)
+
+    def search(c, n, k):
+        if searched is not None:
+            searched.append(list(k))
+        return (jobs if n == "jobs.cz" else [], 0)
+    monkeypatch.setattr(core, "search_portal", search)
+    fetched = []
+    monkeypatch.setattr(core, "fetch_detail_text", lambda c, j, r: fetched.append(j.url) or details.get(j.url, ""))
+    res = core.run(keywords, dry_run=dry_run)
+    res["fetched"] = fetched
+    return res
+
+
+def _jobs():
+    mk = lambda i, t: core.Job(t, "Firma", "Pardubice", "jobs.cz", f"https://www.jobs.cz/rpd/{i}/")
+    return [mk(1, "Specialista zákaznické péče"), mk(2, "Operátor výroby"), mk(3, "Vedoucí prodejny"),
+            mk(4, "Referent klientů")]
+
+
+def test_profile_run_uses_profile_keywords_and_whitelist(monkeypatch):
+    details = {"https://www.jobs.cz/rpd/3/": "Řidičský průkaz výhodou",
+               "https://www.jobs.cz/rpd/4/": "příchozí hovory, helpdesk a reklamace zákazníků"}
+    n, searched = _FakeNotion(), []
+    res = _run_profiles(monkeypatch, _jobs(), details, n, searched=searched)  # bez klíčových slov = profily
+    assert searched[0] == core.search_keywords(PROFILES)
+    assert [(j.title, j.source) for j in res["new"]] == [("Specialista zákaznické péče", "název"),
+                                                         ("Referent klientů", "detail")]
+    assert res["from_detail"] == 1
+    assert res["excluded"] == {"bez_shody": 1, "ridicak": 1}
+    assert [j.title for j in n.created] == ["Specialista zákaznické péče", "Referent klientů"]
+    assert n.created[0].category == CAT["1"] and n.created[0].score >= core.TITLE_SCORE
+
+
+def test_explicit_keywords_skip_whitelist(monkeypatch):
+    n, searched = _FakeNotion(), []
+    res = _run_profiles(monkeypatch, _jobs(), {}, n, keywords=["python"], searched=searched)
+    assert searched[0] == ["python"] and len(res["new"]) == 4  # "Operátor výroby" projde: whitelist se neuplatní
+    assert all(j.category == "" for j in res["new"])
+
+
+def test_unverified_detail_is_saved_with_manual_label(monkeypatch):
+    n = _FakeNotion()
+    res = _run_profiles(monkeypatch, _jobs()[:1], {"https://www.jobs.cz/rpd/1/": None}, n)
+    assert len(n.created) == 1 and n.notes == [core.MANUAL_LABEL] and res["manual_check"] == 1
+
+
+def test_rejected_offers_are_logged_and_skipped_next_run(monkeypatch):
+    first = _run_profiles(monkeypatch, _jobs(), {}, _FakeNotion())
+    assert first["excluded"] == {"bez_shody": 2}
+    rows = [r.split(";") for r in (core.LOG_DIR / "vyrazene.csv").read_text(encoding="utf-8-sig").splitlines()]
+    assert rows[0][2] == "url" and {r[2] for r in rows[1:]} == {"https://www.jobs.cz/rpd/2/", "https://www.jobs.cz/rpd/4/"}
+    assert all(r[6] == "bez shody s obory" for r in rows[1:])  # důvod je v logu čitelně
+    second = _run_profiles(monkeypatch, _jobs(), {}, _FakeNotion(rows=[]))
+    assert second["skipped_rejected"] == 2 and "https://www.jobs.cz/rpd/2/" not in second["fetched"]
+    assert second["excluded"] == {}
+
+
+def test_dry_run_logs_reasons_but_never_skips(monkeypatch):
+    _run_profiles(monkeypatch, _jobs(), {}, _FakeNotion())  # ostrý běh zapíše skip-list
+    res = _run_profiles(monkeypatch, _jobs(), {}, _FakeNotion(), dry_run=True)
+    assert res["skipped_rejected"] == 0 and res["excluded"] == {"bez_shody": 2}  # dry-run vyhodnotí znovu
+    assert (core.LOG_DIR / "vyrazene_dryrun.csv").exists()
+    skip_before = (core.LOG_DIR / "vyrazene.csv").read_text(encoding="utf-8-sig")
+    _run_profiles(monkeypatch, _jobs(), {}, _FakeNotion(), dry_run=True)
+    assert (core.LOG_DIR / "vyrazene.csv").read_text(encoding="utf-8-sig") == skip_before  # dry-run skip-list nemění
+
+
+def test_transient_detail_failure_is_not_logged(monkeypatch):
+    j = [core.Job("Referent klientů", "F", "Pardubice", "jobs.cz", "https://www.jobs.cz/rpd/9/")]
+    res = _run_profiles(monkeypatch, j, {"https://www.jobs.cz/rpd/9/": None}, _FakeNotion())
+    assert res["excluded"] == {"detail_nedostupny": 1}
+    assert not (core.LOG_DIR / "vyrazene.csv").exists()  # příště se vyhodnotí znovu
+
+
+def test_notion_create_writes_optional_columns_only_when_present(monkeypatch):
+    sent = []
+    monkeypatch.setattr(core, "_send", lambda c, m, u, **kw: sent.append(kw["json"]) or httpx.Response(200, request=httpx.Request(m, u)))
+    n = core.Notion.__new__(core.Notion)
+    n.c, n.ds_id, n.has_note = None, "ds", False
+    j = core.Job("Vedoucí prodejny", "F", "Pardubice", "jobs.cz", "u", category="3 Retail management", score=12, source="název")
+    n.optional = frozenset({core.COL_CATEGORY, core.COL_SCORE, core.COL_SOURCE})
+    n.create(j)
+    props = sent[-1]["properties"]
+    assert props[core.COL_CATEGORY] == {"select": {"name": "3 Retail management"}}
+    assert props[core.COL_SCORE] == {"number": 12} and props[core.COL_SOURCE] == {"select": {"name": "název"}}
+    n.optional = frozenset()  # sloupce v databázi nejsou -> zápis nesmí spadnout na neexistující vlastnosti
+    n.create(j)
+    assert core.COL_CATEGORY not in sent[-1]["properties"] and core.COL_URL in sent[-1]["properties"]
+
+
+def test_summary_lists_reasons_and_missing_columns():
+    res = {"new": [1], "skipped_existing": 2, "excluded": {"ridicak": 5, "noc": 1}, "from_detail": 1,
+           "skipped_rejected": 3, "missing_columns": ["Skóre"], "write_errors": 0, "portals": {"jobs.cz": "ok (9)"}}
+    out = core.summary(res)
+    assert "vyřazeno: 6 (řidičské oprávnění 5, noční směny 1)" in out
+    assert "nalezeno z detailu" in out and "Skóre" in out and "nedávno vyřazeno): 3" in out
+

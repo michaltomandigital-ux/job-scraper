@@ -8,7 +8,7 @@ mcp = MCPServer("job-scraper")
 
 @mcp.tool()
 def run_scrape(keywords: list[str], dry_run: bool = True) -> str:
-    """Vyhledá pracovní nabídky a uloží nové do Notionu (dry_run=True nic nezapisuje). Vrací krátký souhrn."""
+    """Vyhledá pracovní nabídky a uloží nové do Notionu (dry_run=True nic nezapisuje). Prázdný seznam slov = hledání podle profese.json. Vrací krátký souhrn."""
     try:
         res = core.run(keywords, dry_run=dry_run)
     except SystemExit as e:

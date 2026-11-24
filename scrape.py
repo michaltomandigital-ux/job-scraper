@@ -1,4 +1,4 @@
-"""Ruční CLI: py scrape.py "python" "analytik" [--dry-run] [--notify]"""
+"""CLI: py scrape.py [--dry-run] [--notify]  (podle profese.json)  nebo  py scrape.py "python" "analytik" [--dry-run] [--notify]"""
 import argparse
 
 import httpx
@@ -8,7 +8,7 @@ import core
 
 def main():
     ap = argparse.ArgumentParser(description="Hledá pracovní nabídky a ukládá je do Notionu.")
-    ap.add_argument("keywords", nargs="+", help="klíčová slova (hledá se každé zvlášť)")
+    ap.add_argument("keywords", nargs="*", help="klíčová slova (hledá se každé zvlášť); bez nich se hledá podle profese.json")
     ap.add_argument("--dry-run", action="store_true", help="nic nezapisovat, jen vypsat")
     ap.add_argument("--notify", action="store_true", help="po dokončení poslat do Telegramu oznámení se shrnutím")
     args = ap.parse_args()
@@ -18,7 +18,9 @@ def main():
         print(f"[{name}] {state}")
     print("\n" + core.summary(res, args.dry_run))
     for j in res["new"]:
-        print(f"- {j.title} | {j.company} | {j.place} | {j.url}")
+        print(f"- {j.title} | {j.company} | {j.place} | {j.url}" + (f" | {j.category}" if j.category else ""))
+    if args.dry_run:
+        print(f"\nDůvody vyřazení: {core.LOG_DIR / 'vyrazene_dryrun.csv'}")
 
     if args.notify:
         if args.dry_run:

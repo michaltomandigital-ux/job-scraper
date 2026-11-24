@@ -1,0 +1,64 @@
+# Blacklist: nabídka, jejíž NÁZEV obsahuje některý z těchto výrazů (malá písmena, bez ohledu na velikost), se nikdy neuloží.
+# Platí vždy, bez výjimek (i pro pozice nalezené z detailu a i když název sedí na profese.json). Jeden výraz na řádek, # = komentář.
+# Převzato z dřívějších seznamů BLACKLIST a BLACKLIST_HARD; WHITELIST ("skladn") zrušen: řidič a ostatní platí vždy.
+recepční
+číšník
+číšnic
+servírk
+pokladní
+pokladník
+uklízeč
+uklízečk
+brigádník
+kuchař
+řidič
+zdravotní sestra
+pečovatel
+lékař
+sestra
+sociální pracovn
+ošetřovatel
+zdravotnick
+fyzioterapeut
+doktor
+mudr
+zubař
+zubní
+stomatolog
+sanitář
+zdravotní asistent
+sociální služb
+sociálních služ
+sociální péče
+sociální poradce
+sociální asistent
+pečující
+pečovat
+asistent péče
+pracovník v přímé péči
+pracovník přímé péče
+domov pro
+domov seniorů
+domov důchodců
+chráněné bydlení
+zámečník
+svářeč
+autoklempíř
+instalatér
+topenář
+montér
+elektromontáž
+plynovod
+realit
+makléř
+investiční specialist
+systémový inženýr
+informačních systémů
+# natvrdo (dřív BLACKLIST_HARD)
+finanční poradc
+finanční poradk
+pojišťovací poradc
+pojišťovací poradk
+f2f
+door to door
+door-to-door
