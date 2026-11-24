@@ -1,0 +1,56 @@
+name: scrape
+
+on:
+  schedule:
+    # UTC: v zimě 6:00 a 16:00 českého času, v létě 7:00 a 17:00
+    - cron: "0 5,15 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Jen vypsat, nic nezapisovat do Notionu ani do Telegramu"
+        type: boolean
+        default: true
+
+# nikdy dva ostré běhy najednou (stejně jako .run.lock lokálně)
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Scrape
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # jedno klíčové slovo na řádek (Settings -> Secrets and variables -> Actions -> Variables)
+          KEYWORDS: ${{ vars.SCRAPE_KEYWORDS }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          mapfile -t KW < <(printf '%s\n' "$KEYWORDS" | sed '/^[[:space:]]*$/d')
+          if [ "${#KW[@]}" -eq 0 ]; then
+            echo "Chybí proměnná SCRAPE_KEYWORDS" >&2
+            exit 1
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            python scrape.py "${KW[@]}" --dry-run
+          else
+            python scrape.py "${KW[@]}" --notify
+          fi
