@@ -22,7 +22,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90  # běh podle profese.json (30 dotazů x lokality x stránky x pauza 2 s) je dlouhý
     steps:
       - uses: actions/checkout@v4
 
@@ -39,16 +39,13 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # jedno klíčové slovo na řádek (Settings -> Secrets and variables -> Actions -> Variables)
+          # volitelné: jedno klíčové slovo na řádek (Settings -> Secrets and variables -> Actions -> Variables)
+          # prázdné = hledání podle profese.json, stejně jako lokálně `py scrape.py`
           KEYWORDS: ${{ vars.SCRAPE_KEYWORDS }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           PYTHONIOENCODING: utf-8
         run: |
           mapfile -t KW < <(printf '%s\n' "$KEYWORDS" | sed '/^[[:space:]]*$/d')
-          if [ "${#KW[@]}" -eq 0 ]; then
-            echo "Chybí proměnná SCRAPE_KEYWORDS" >&2
-            exit 1
-          fi
           if [ "$DRY_RUN" = "true" ]; then
             python scrape.py "${KW[@]}" --dry-run
           else
