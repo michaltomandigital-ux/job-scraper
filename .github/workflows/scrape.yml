@@ -2,8 +2,8 @@ name: scrape
 
 on:
   schedule:
-    # UTC: v zimě 6:00 a 16:00 českého času, v létě 7:00 a 17:00
-    - cron: "0 5,15 * * *"
+    # UTC: obden v 6:00 českého času v zimě, 7:00 v létě (liché dny v měsíci; na přelomu 31. -> 1. dva dny po sobě)
+    - cron: "0 5 1-31/2 * *"
   workflow_dispatch:
     inputs:
       dry_run:
