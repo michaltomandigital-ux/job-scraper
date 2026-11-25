@@ -54,6 +54,10 @@ makléř
 investiční specialist
 systémový inženýr
 informačních systémů
+stavbyvedouc
+tech lead
+disponent
+dokumentarist
 # natvrdo (dřív BLACKLIST_HARD)
 finanční poradc
 finanční poradk

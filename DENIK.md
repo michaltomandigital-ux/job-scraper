@@ -10,6 +10,9 @@ Zadání a pravidla jsou v `CLAUDE.md`. Tady je historie a to, co se ověřilo n
 - Opravená chyba: regex řidičského průkazu nechytal skloňování („řidičského průkazu“).
 - Starší řádky v Notionu zůstávají (např. s „řidičský průkaz výhodou“).
 
+## Evidence změn blacklistu
+- 2026-11-25: `blacklist.txt` +stavbyvedouc, tech lead, disponent, dokumentarist (šum z dry-runu v GitHub Actions, např. „Stavbyvedoucí senior“, „Tech Lead Product Security“, „Disponent MKD“, „Dokumentarista IPS“; na pokyn uživatele). `nákupč` NEPŘIDÁNO: koliduje s „asistent nákupčího“ v `profese.json`.
+
 ## Portály
 - jobs.cz: parser přes CSS (ve výpisu není JSON-LD; parsery JSON-LD nečtou, jen CSS), stránkování `&page=N`. Občas nahodile vrátí prázdnou stránku (`layout_changed`); je jeden retry, případně běh zopakovat. Kostelec nad Orlicí portál nezná (404 = jen tato lokalita prázdná).
 - jenprace.cz: filtr `?locations[0]=<ID>&subjects[0]=<slovo>`; ID měst v `JENPRACE_CZ["city_ids"]` (Rychnov nad Kněžnou 732882, Kostelec nad Orlicí 732850, Hradec Králové 732549, Pardubice 733145; z `data-locations.json`). Za nadpisem „Podívejte se i na jiné nabídky“ jsou jen doporučené nabídky (parser je vynechává); „(0 inzerátů)“ = prázdný výsledek. Filtr podle slova propouští i nesouvisející obory.
