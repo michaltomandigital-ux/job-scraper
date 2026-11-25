@@ -528,6 +528,10 @@ def test_decide_title_rules_without_profiles():
     assert why("Obsluha vysokozdvižného vozíku") == "vzv"
     assert why("Skladník - noční směny") == "noc"
     assert why("Kuchař / kuchařka") == "blacklist"
+    assert why("Stavbyvedoucí senior") == "blacklist"
+    assert why("Tech Lead Product Security") == "blacklist"
+    assert why("Disponent MKD s ruštinou nebo ukrajinštinou") == "blacklist"
+    assert why("Dokumentarista IPS") == "blacklist"
 
 
 def test_hard_reason_driving_licence_only_as_requirement():
