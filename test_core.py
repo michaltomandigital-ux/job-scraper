@@ -593,7 +593,7 @@ CAT = {c["nazev"].split()[0]: c["nazev"] for c in PROFILES}  # "1" -> "1 Zákazn
 
 
 def test_profiles_and_blacklist_files_are_valid():
-    assert [c["nazev"][0] for c in PROFILES] == ["1", "2", "3", "4", "5"]  # pořadí = priorita
+    assert [c["nazev"][0] for c in PROFILES] == ["1", "2", "3", "4", "5", "6"]  # pořadí = priorita
     assert all(c["search"] and c["title"] for c in PROFILES)
     kws = core.search_keywords(PROFILES)
     assert len(kws) == len(set(kws)) and "zákaznická podpora" in kws and "montáž" in kws
@@ -617,6 +617,7 @@ def test_whitelist_title_match_gives_category_and_priority():
         "Sekretářka": "2", "Specialista metodické podpory, oblast fakturace": "2",
         "Prodejce mobilních telefonů junior": "4", "Prodejce / prodejkyně ICT": "4",
         "Asistent nákupčího": "2", "Project Administrator": "2", "Projektový administrátor": "2",
+        "Koordinátor/ka marketingu a nákupu (práce s AI)": "6", "Specialista pro umělou inteligenci": "6",
     }
     for title, num in cases.items():
         r = d(title)
