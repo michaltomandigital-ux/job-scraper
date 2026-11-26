@@ -158,6 +158,17 @@
         "montáž|montážn"
       ],
       "signaly": []
+    },
+    {
+      "nazev": "6 Práce s AI",
+      "search": [
+        "AI",
+        "umělá inteligence"
+      ],
+      "title": [
+        "\\bai\\b|uměl\\w* inteligenc"
+      ],
+      "signaly": []
     }
   ]
 }
